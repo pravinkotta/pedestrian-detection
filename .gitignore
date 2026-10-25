@@ -1,4 +1,4 @@
-# ---- Python ----
+# ============ Python ============
 __pycache__/
 *.py[cod]
 *.egg-info/
@@ -6,7 +6,7 @@ __pycache__/
 venv/
 env/
 
-# ---- Data (NEVER commit datasets) ----
+# ============ Data — NEVER commit datasets ============
 # NOTE: must be anchored with a leading slash, otherwise `data/` would also
 # match src/data/ and silently exclude the pipeline code itself.
 # CI regenerates the synthetic dataset from the notebook's make_scene() generator.
@@ -14,36 +14,36 @@ env/
 *.zip
 *.mat
 
-# ---- MLflow ----
+# ============ MLflow tracking state ============
+# Split: metadata lives in SQLite, artifacts in mlruns/. Both local-only.
 /mlruns/
 /mlartifacts/
 /mlflow.db
 *.db
 
-# ---- Models / MLflow runs ----
+# ============ Model weights / reports ============
 /models/
-/mlruns/
-/mlartifacts/
 *.pt
 *.pth
 *.onnx
-outputs/
-runs/
+/outputs/
+/runs/
 
-# ---- Secrets ----
+# ============ Secrets — use GitHub Secrets instead ============
 .env
 *.pem
 
-# ---- Editors / OS ----
+# ============ Local server logs ============
+*.log
+
+# ============ Editors / OS ============
 .vscode/
 .idea/
 .DS_Store
 Thumbs.db
 
-# ---- Test / lint caches ----
+# ============ Test / lint caches ============
 .pytest_cache/
 .ruff_cache/
 .coverage
 htmlcov/
-__pycache__/
-*.pyc

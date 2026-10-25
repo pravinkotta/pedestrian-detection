@@ -153,6 +153,43 @@ confidently calls cyclists "vehicles."
 > serving traffic, `@challenger` at the candidate. Promoting a retrain is a
 > pointer flip, so rollback is instant and no version history is lost.
 
+## Stage 5 — FastAPI serving
+
+```powershell
+uvicorn api.main:app --host 0.0.0.0 --port 8000
+# interactive docs at http://127.0.0.1:8000/docs
+```
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /health` | liveness probe — the **ECS / ALB target-group check** |
+| `GET /model` | which model, classes, device (traceability) |
+| `POST /detect?score_thresh=0.3` | image in → `[{bbox, label, score}]` out |
+
+```python
+import httpx
+r = httpx.post("http://127.0.0.1:8000/detect",
+               params={"score_thresh": 0.3},
+               files={"file": ("frame.png", open("frame.png","rb").read(), "image/png")})
+r.json()   # {detections: [...], image: {width, height}, inference_ms, model_source, ...}
+```
+
+**Model source** (resolved in `api/service.py`), highest priority first:
+
+| Env var | Example | Used by |
+|---|---|---|
+| `MODEL_URI` | `models:/PedestrianDetector@champion` | production (serves whatever the registry says) |
+| `MODEL_PATH` | `models/model.pt` | local development |
+| `INFERENCE_DEVICE` | `cpu` (default) / `cuda` | — |
+
+`/health` returns **200 even if the model failed to load** (`model_loaded: false`),
+so the ALB can distinguish *starting up* from *broken* while `/model` still
+reports the actual error. `score_thresh` is a query parameter because the
+operating point is a deployment decision — the notebook's safety point is 0.71 —
+and it must be tunable **without retraining**.
+
+Measured on this machine: **~648 ms inference**, 0.7 s round-trip, 256×192 PNG.
+
 ## Repository policy (for GitHub Actions)
 
 CI clones a **fresh, empty VM** — it only ever sees committed files.
@@ -172,7 +209,8 @@ AWS credentials live in **GitHub Secrets**, not in the repo.
 - [x] Step 2 — training loop (promoted from notebook) + 11 model tests
 - [x] Step 3 — MLflow experiment tracking (SQLite backend) + 8 tracking tests
 - [x] Step 4 — evaluation gate (exit 0/1/2) + MLflow registry with aliases + 13 tests
-- [ ] Step 5 — FastAPI serving
+- [x] Step 5 — FastAPI serving (health / model / detect) + 12 API tests
+- [ ] Step 6 — Docker
 - [ ] Step 4 — MLflow model registry + evaluation gate
 - [ ] Step 5 — FastAPI serving
 - [ ] Step 6 — Docker
