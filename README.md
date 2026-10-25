@@ -72,6 +72,23 @@ Every path, hyperparameter and the ship/no-ship gate lives in
 CI fails the deploy if any gate value is missed → that is the *automatic* half of the
 HITL gate. High-risk changes additionally require human approval.
 
+## Stage 2 — Training
+
+```powershell
+python -m src.models.train --smoke    # ~15 s: imports, shapes, gradients, one batch
+python -m src.models.train            # full run: 3 epochs, ~15-25 min on CPU
+python -m src.models.train --epochs 5 # override config
+pytest -q                             # 19 tests
+```
+
+Output: `models/model.pt` — a checkpoint containing the weights, class list,
+training history, metrics and the config used to produce it.
+
+> `--smoke` is what CI runs on every push: it catches broken imports, bad
+> tensor shapes and dataset regressions in seconds instead of 25 minutes.
+> Set `train.eval_each_epoch: false` in config if you want to skip the
+> end-of-run evaluation.
+
 ## Repository policy (for GitHub Actions)
 
 CI clones a **fresh, empty VM** — it only ever sees committed files.
@@ -88,7 +105,7 @@ AWS credentials live in **GitHub Secrets**, not in the repo.
 
 - [x] Step 0 — project scaffold
 - [x] Step 1 — data layers (Bronze / Silver / Gold) + 8 passing tests
-- [ ] Step 2 — training loop (promoted from notebook)
+- [x] Step 2 — training loop (promoted from notebook) + 11 model tests
 - [ ] Step 3 — MLflow experiment tracking
 - [ ] Step 4 — MLflow model registry + evaluation gate
 - [ ] Step 5 — FastAPI serving

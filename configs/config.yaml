@@ -74,7 +74,8 @@ train:
   weight_decay: 0.0005
   image_min_size: 480
   image_max_size: 800
-  log_every: 20
+  log_every: 15
+  eval_each_epoch: true   # runs the full recall@FPR eval after the final epoch
 
 # ------------------------------------------------------------
 # EVALUATION GATE — used by CI + HITL to decide "ship or no-ship"
