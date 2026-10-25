@@ -192,8 +192,10 @@ def train(cfg: dict, epochs: int | None = None, smoke: bool = False,
         log(f"checkpoint -> {out_path.relative_to(PROJECT_ROOT)} "
             f"({out_path.stat().st_size/1e6:.1f} MB)")
 
+    # the model object is returned so run_experiment can log it to the
+    # MLflow Model Registry (Step 4) without re-loading from disk
     return {"history": history, "metrics": best or None,
-            "model_info": info, "classes": classes}
+            "model_info": info, "classes": classes, "model": model}
 
 
 def main() -> int:

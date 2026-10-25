@@ -47,6 +47,8 @@ def main() -> int:
                         help="train without MLflow")
     parser.add_argument("--tags", nargs="*", default=[],
                         help="extra tags, key=value")
+    parser.add_argument("--no-model", action="store_true",
+                        help="skip logging the registerable model artifact")
     args = parser.parse_args()
 
     cfg = load_config(Path(args.config))
@@ -97,6 +99,30 @@ def main() -> int:
         # 4. what to keep
         checkpoint = PROJECT_ROOT / cfg["paths"]["model_dir"] / "model.pt"
         log_artifacts(mlflow, cfg, None if args.smoke else checkpoint)
+
+        # 4b. registerable model artifact — `runs:/<id>/model` is what
+        #     src.registry.register promotes into the Model Registry.
+        #     `metadata` carries the label map so the serving layer never
+        #     has to guess class order.
+        if result.get("model") is not None and not args.no_model:
+            import mlflow.pytorch
+            # MLflow 3 defaults serialization_format='pt2' (torch.compile
+            # traced graph), which requires a fixed input_example. A detector
+            # takes variable-size images and returns list[dict], so it cannot
+            # be traced — 'pickle' is the correct format here.
+            mlflow.pytorch.log_model(
+                result["model"],
+                name="model",
+                serialization_format="pickle",
+                metadata={
+                    "classes": result["classes"],
+                    "architecture": cfg["model"]["architecture"],
+                    "task": "object-detection",
+                    "metric": "recall_at_fpr",
+                },
+                pip_requirements=["torch", "torchvision", "pillow", "numpy"],
+            )
+            print(f"  logged model artifact -> runs:/{run.info.run_id}/model")
 
         # 5. did it pass the gate?  (recorded, not yet enforced — Step 4 enforces)
         from src.models.evaluate import check_gate

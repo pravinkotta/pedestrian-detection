@@ -78,7 +78,7 @@ HITL gate. High-risk changes additionally require human approval.
 python -m src.models.train --smoke    # ~15 s: imports, shapes, gradients, one batch
 python -m src.models.train            # full run: 3 epochs, ~15-25 min on CPU
 python -m src.models.train --epochs 5 # override config
-pytest -q                             # 19 tests
+pytest -q                             # 40 tests total
 ```
 
 Output: `models/model.pt` — a checkpoint containing the weights, class list,
@@ -113,6 +113,46 @@ mlflow ui --backend-store-uri sqlite:///mlflow.db     # then open http://127.0.0
 `git_dirty: True` on a run means it was built from **uncommitted code** — that run
 is not reproducible, and MLflow says so out loud.
 
+## Stage 4 — Evaluation gate + Model Registry
+
+```powershell
+# Gate — the script CI calls. Exit 0 = ship, 1 = block, 2 = broken.
+python -m src.registry.gate                       # models/model.pt on val
+python -m src.registry.gate --split test --json   # hold-out, machine-readable
+
+# Registry — refuses any run whose gate did not pass
+python -m src.registry.register --run <run_id>                  # -> @challenger
+python -m src.registry.register --run <run_id> --alias champion # -> production
+python -m src.registry.register --run <run_id> --dry-run        # inspect only
+```
+
+| Exit code | Meaning |
+|---:|---|
+| `0` | **PASS** — every gate metric cleared its threshold |
+| `1` | **FAIL** — model rejected, do not deploy |
+| `2` | **ERROR** — missing checkpoint/data/config (a bug, not a bad model) |
+
+Keeping `1` and `2` distinct lets CI tell *"this model is not good enough"*
+apart from *"something is broken."*
+
+**Gate thresholds** (`gate:` in config) — CI fails the run if any is missed:
+
+| Metric | Required |
+|---|---:|
+| `recall_at_fpr` | ≥ 0.85 @ FPR ≤ 1% |
+| `ap_11point` | ≥ 0.75 |
+| `pedestrian_recall_at_op` | ≥ 0.85 |
+
+The registry additionally refuses runs tagged `gate_passed: false`
+(`--force` overrides, loudly). Registering also verifies the model's class
+list matches `config.dataset.label_map` — a mismatch would ship a model that
+confidently calls cyclists "vehicles."
+
+> **MLflow 3 note:** stages (None/Staging/Production) are replaced by
+> **aliases** — `models:/PedestrianDetector@champion` points at the model
+> serving traffic, `@challenger` at the candidate. Promoting a retrain is a
+> pointer flip, so rollback is instant and no version history is lost.
+
 ## Repository policy (for GitHub Actions)
 
 CI clones a **fresh, empty VM** — it only ever sees committed files.
@@ -131,7 +171,8 @@ AWS credentials live in **GitHub Secrets**, not in the repo.
 - [x] Step 1 — data layers (Bronze / Silver / Gold) + 8 passing tests
 - [x] Step 2 — training loop (promoted from notebook) + 11 model tests
 - [x] Step 3 — MLflow experiment tracking (SQLite backend) + 8 tracking tests
-- [ ] Step 4 — MLflow model registry + evaluation gate
+- [x] Step 4 — evaluation gate (exit 0/1/2) + MLflow registry with aliases + 13 tests
+- [ ] Step 5 — FastAPI serving
 - [ ] Step 4 — MLflow model registry + evaluation gate
 - [ ] Step 5 — FastAPI serving
 - [ ] Step 6 — Docker
