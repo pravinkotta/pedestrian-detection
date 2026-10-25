@@ -28,7 +28,18 @@ paths:
 
   # Models / experiments
   model_dir: models
-  mlruns: mlruns
+
+# ------------------------------------------------------------
+# MLFLOW (Step 3)
+#   MLflow 3.x retired the plain ./mlruns filesystem backend, so tracking
+#   metadata lives in SQLite while *artifacts* (checkpoints, stats, config)
+#   stay in ./mlruns. Both are gitignored.
+# ------------------------------------------------------------
+mlflow:
+  experiment: pedestrian-detection
+  sqlite: mlflow.db
+  artifact_root: mlruns
+  server: http://127.0.0.1:5000
 
 # ------------------------------------------------------------
 # DATASET — meta.json schema

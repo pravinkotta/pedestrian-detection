@@ -89,6 +89,30 @@ training history, metrics and the config used to produce it.
 > Set `train.eval_each_epoch: false` in config if you want to skip the
 > end-of-run evaluation.
 
+## Stage 3 — Experiment tracking (MLflow)
+
+```powershell
+python -m src.experiments.run_experiment --smoke     # ~30 s: full tracking path
+python -m src.experiments.run_experiment             # real run, ~15-25 min CPU
+python -m src.experiments.run_experiment --run-name "baseline-v1" --tags dataset=v1
+python -m src.experiments.run_experiment --no-track  # train without MLflow
+
+mlflow ui --backend-store-uri sqlite:///mlflow.db     # then open http://127.0.0.1:5000
+```
+
+| Logged | Contents |
+|--------|----------|
+| **params** (25) | every `train.*`, `model.*`, `gate.*` value + label map |
+| **metrics** (23) | `recall_at_fpr`, `ap_11point`, `pedestrian_recall_at_op`, `precision/fpr/fppi_at_op`, per-class recall, 5 loss terms per epoch |
+| **tags** | `git_sha`, `git_dirty`, `config_sha`, `data_manifest_sha`, `dataset_stats_sha`, `gate_passed` |
+| **artifacts** | `config/`, `data/` (bronze manifest + gold stats), `model/` (checkpoint) |
+
+> MLflow 3.x retired the plain `./mlruns` filesystem backend, so metadata lives in
+> **SQLite** (`mlflow.db`) while artifacts stay in `mlruns/`. Both gitignored.
+
+`git_dirty: True` on a run means it was built from **uncommitted code** — that run
+is not reproducible, and MLflow says so out loud.
+
 ## Repository policy (for GitHub Actions)
 
 CI clones a **fresh, empty VM** — it only ever sees committed files.
@@ -106,7 +130,8 @@ AWS credentials live in **GitHub Secrets**, not in the repo.
 - [x] Step 0 — project scaffold
 - [x] Step 1 — data layers (Bronze / Silver / Gold) + 8 passing tests
 - [x] Step 2 — training loop (promoted from notebook) + 11 model tests
-- [ ] Step 3 — MLflow experiment tracking
+- [x] Step 3 — MLflow experiment tracking (SQLite backend) + 8 tracking tests
+- [ ] Step 4 — MLflow model registry + evaluation gate
 - [ ] Step 4 — MLflow model registry + evaluation gate
 - [ ] Step 5 — FastAPI serving
 - [ ] Step 6 — Docker

@@ -31,7 +31,6 @@ from pathlib import Path
 import numpy as np
 import torch
 import yaml
-
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = PROJECT_ROOT / "configs" / "config.yaml"
 
@@ -48,25 +47,36 @@ def load_config(path: Path) -> dict:
     return yaml.safe_load(path.read_text(encoding="utf-8"))
 
 
-def build_loaders(cfg: dict):
-    from .dataset import make_loader
+def build_loaders(cfg: dict, val_limit: int | None = None):
+    """Build train + val DataLoaders.
+
+    ``val_limit`` caps the validation set — used by ``--smoke`` so CI still
+    exercises the *entire* code path (inference -> matching -> metrics ->
+    MLflow logging) without paying for a full 80-image evaluation.
+    """
+    from torch.utils.data import DataLoader, Subset
+
+    from .dataset import CocoDetectionDataset, collate
 
     p = cfg["paths"]
-    train = make_loader(
-        PROJECT_ROOT / p["coco_dir"] / "train.json",
-        PROJECT_ROOT / p["raw_images"] / "train",
-        batch_size=cfg["train"]["batch_size"],
-        shuffle=True,
-        num_workers=cfg["train"]["num_workers"],
-    )
-    val = make_loader(
-        PROJECT_ROOT / p["coco_dir"] / "val.json",
-        PROJECT_ROOT / p["raw_images"] / "val",
-        batch_size=cfg["train"]["batch_size"] * 2,
-        shuffle=False,
-        num_workers=cfg["train"]["num_workers"],
-    )
-    return train, val
+    nw = cfg["train"]["num_workers"]
+
+    def dataset(split: str) -> CocoDetectionDataset:
+        return CocoDetectionDataset(
+            PROJECT_ROOT / p["coco_dir"] / f"{split}.json",
+            PROJECT_ROOT / p["raw_images"] / split,
+        )
+
+    train_ds = dataset("train")
+    val_ds = dataset("val")
+    if val_limit is not None:
+        val_ds = Subset(val_ds, range(min(val_limit, len(val_ds))))
+
+    train = DataLoader(train_ds, batch_size=cfg["train"]["batch_size"],
+                       shuffle=True, collate_fn=collate, num_workers=nw)
+    val = DataLoader(val_ds, batch_size=cfg["train"]["batch_size"] * 2,
+                     shuffle=False, collate_fn=collate, num_workers=nw)
+    return train, val, train_ds.classes
 
 
 def train(cfg: dict, epochs: int | None = None, smoke: bool = False,
@@ -82,12 +92,11 @@ def train(cfg: dict, epochs: int | None = None, smoke: bool = False,
     set_seed(cfg["project"]["seed"])
     device = resolve_device("auto")
 
-    train_loader, val_loader = build_loaders(cfg)
-    classes = [c["name"] for c in
-               sorted(json.loads(
-                   (PROJECT_ROOT / cfg["paths"]["coco_dir"] / "train.json")
-                   .read_text(encoding="utf-8"))["categories"],
-                   key=lambda c: c["id"])]
+    # In smoke mode, evaluate on only a handful of val images so the full
+    # metrics path runs cheaply.
+    train_loader, val_loader, classes = build_loaders(
+        cfg, val_limit=4 if smoke else None
+    )
     num_classes = len(classes) + 1      # + background
 
     model = build_model(num_classes, pretrained=True, device=device)
@@ -145,6 +154,13 @@ def train(cfg: dict, epochs: int | None = None, smoke: bool = False,
         history.append(rec)
 
         if smoke:
+            metrics = evaluate(model, val_loader, device, classes,
+                               fpr_budget=cfg["gate"]["fpr_budget"])
+            metrics.pop("_raw", None)
+            best = metrics
+            log(f"  smoke val: AP {metrics['ap_11point']} | "
+                f"recall@FPR {metrics['recall_at_fpr']} | "
+                f"ped recall {metrics['pedestrian_recall_at_op']}")
             break
 
         if t_cfg.get("eval_each_epoch", False) and epoch == epochs:

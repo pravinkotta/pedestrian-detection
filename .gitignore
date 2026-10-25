@@ -17,6 +17,7 @@ env/
 # ---- MLflow ----
 /mlruns/
 /mlartifacts/
+/mlflow.db
 *.db
 
 # ---- Models / MLflow runs ----
