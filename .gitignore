@@ -1,0 +1,48 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# ---- Data (NEVER commit datasets) ----
+# NOTE: must be anchored with a leading slash, otherwise `data/` would also
+# match src/data/ and silently exclude the pipeline code itself.
+# CI regenerates the synthetic dataset from the notebook's make_scene() generator.
+/data/
+*.zip
+*.mat
+
+# ---- MLflow ----
+/mlruns/
+/mlartifacts/
+*.db
+
+# ---- Models / MLflow runs ----
+/models/
+/mlruns/
+/mlartifacts/
+*.pt
+*.pth
+*.onnx
+outputs/
+runs/
+
+# ---- Secrets ----
+.env
+*.pem
+
+# ---- Editors / OS ----
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# ---- Test / lint caches ----
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+__pycache__/
+*.pyc

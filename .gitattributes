@@ -1,0 +1,18 @@
+# Normalise line endings so CI (Linux) and Windows checkouts behave identically.
+* text=auto
+
+# Explicitly text — avoids "LF will be replaced by CRLF" noise on Windows.
+*.py    text eol=lf
+*.yaml  text eol=lf
+*.yml   text eol=lf
+*.md    text eol=lf
+*.txt   text eol=lf
+*.json  text eol=lf
+
+# Binary — never let git touch these.
+*.png   binary
+*.jpg   binary
+*.pt    binary
+*.pth   binary
+*.onnx  binary
+*.zip   binary

@@ -1,0 +1,89 @@
+# ============================================================
+#  Central config — every script reads THIS file.
+#  Change a value here, never hardcode paths in .py files.
+# ============================================================
+
+project:
+  name: pedestrian-detection
+  seed: 42
+
+# ------------------------------------------------------------
+# PATHS  (relative to project root)
+# ------------------------------------------------------------
+paths:
+  # BRONZE — raw dataset, never modified
+  #   Synthetic street-scene frames + meta.json produced by the notebook generator.
+  raw: data
+  raw_images: data               # data/{train,val,test}/*.png
+  raw_meta: data/meta.json       # {"train": [...], "val": [...], "test": [...]}
+  bronze_manifest: data/_bronze_manifest.json
+
+  # SILVER — normalised COCO annotations (one JSON per split)
+  interim: data/interim
+  coco_dir: data/interim/annotations
+
+  # GOLD — final training-ready splits + stats (the drift baseline)
+  processed: data/processed
+  gold_stats: data/processed/dataset_stats.json
+
+  # Models / experiments
+  model_dir: models
+  mlruns: mlruns
+
+# ------------------------------------------------------------
+# DATASET — meta.json schema
+#   {"train": [{"file": "train_0000.png",
+#               "annotations": [{"bbox": [x1,y1,x2,y2], "label": 1}, ...]}, ...]}
+#   label 1 = pedestrian | 2 = cyclist | 3 = vehicle
+# ------------------------------------------------------------
+dataset:
+  splits:
+    - train
+    - val
+    - test
+  # label id -> class name (order defines COCO category ids 1..N)
+  label_map:
+    1: pedestrian
+    2: cyclist
+    3: vehicle
+  # meta.json stores bbox as [x1, y1, x2, y2]; COCO wants [x, y, w, h]
+  bbox_format: xyxy
+  # Drop degenerate boxes smaller than this (area in px^2)
+  min_box_area: 64
+
+# ------------------------------------------------------------
+# MODEL — torchvision Faster R-CNN (MobileNetV3-Large + FPN)
+# ------------------------------------------------------------
+model:
+  architecture: fasterrcnn_mobilenet_v3_large_fpn
+  weights: coco                # COCO-pretrained backbone; head is replaced
+  # num_classes is derived from dataset.label_map (3) + 1 background = 4
+  box_score_thresh: 0.05
+  box_nms_thresh: 0.5
+  box_detections_per_img: 300
+
+# ------------------------------------------------------------
+# TRAINING
+# ------------------------------------------------------------
+train:
+  epochs: 3
+  batch_size: 4
+  num_workers: 0               # Windows + DataLoader: keep 0 unless you add a __main__ guard
+  lr: 0.003
+  momentum: 0.9
+  weight_decay: 0.0005
+  image_min_size: 480
+  image_max_size: 800
+  log_every: 20
+
+# ------------------------------------------------------------
+# EVALUATION GATE — used by CI + HITL to decide "ship or no-ship"
+# NOTE: this project's headline metric is Recall @ FPR, not mAP.
+# ------------------------------------------------------------
+gate:
+  # Notebook baseline (synthetic val): recall 0.906 @ FPR 0.0071, AP 0.883
+  min_recall_at_fpr: 0.85      # recall at FPR <= 1% budget
+  fpr_budget: 0.01             # 1% false-positive-rate ceiling
+  min_ap: 0.75                 # 11-point AP, all classes
+  min_pedestrian_recall: 0.85  # SAFETY metric — pedestrian class specifically
+  max_inference_ms: 800        # p95 latency budget on CI CPU (baseline ~734 ms)
