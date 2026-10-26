@@ -99,3 +99,47 @@ def test_no_stored_secrets_anywhere_in_the_pipeline():
                 assert "secrets.GITHUB_TOKEN" in stripped, (
                     f"{path.name} references a stored secret: {stripped}"
                 )
+
+
+# ---------------------------------------------------------------------------
+# Deployment-bootstrap properties — the day-2 contract (start -> API live,
+# stop -> nothing runs) encoded as test failures instead of as documentation.
+# ---------------------------------------------------------------------------
+
+REPO = Path(__file__).resolve().parents[1]
+_SKIP_DIRS = {".git", "mlruns", "data", "models", "outputs", "node_modules",
+              "__pycache__", ".pytest_cache"}
+
+
+def test_container_restart_policy_is_always():
+    """The API must come back on every boot, even after a manual `docker stop`.
+
+    `unless-stopped` would honour a deliberate stop across a reboot — for an
+    unattended API that means "someone debugged it once and it stayed down".
+    Cost is gated by *instance* state, not by this flag: a stopped instance
+    runs nothing, a started one must serve unattended.
+    """
+    text = (REPO / "deploy" / "user-data.sh").read_text(encoding="utf-8")
+    run_lines = [ln for ln in text.splitlines() if "docker run" in ln]
+    assert run_lines, "user-data.sh must create the container"
+    assert "--restart always" in run_lines[0], (
+        "the deployed container must use --restart always"
+    )
+    # and the loop that creates it must itself be enabled at boot
+    assert "systemctl enable --now pedestrian-deployer" in text
+
+
+def test_shell_scripts_are_lf_only():
+    """cloud-init pipes user-data.sh straight into bash on the EC2 box.
+
+    A CRLF checkout (core.autocrlf=true is the Windows default) would upload a
+    script whose lines end in `\\r` → the bootstrap dies with
+    `\\r: command not found` before docker is even installed. `.gitattributes`
+    pins eol=lf; this test fails if that protection ever disappears.
+    """
+    scripts = [p for p in REPO.rglob("*.sh") if not (set(p.parts) & _SKIP_DIRS)]
+    assert scripts, "expected at least deploy/user-data.sh"
+    for path in scripts:
+        assert b"\r\n" not in path.read_bytes(), (
+            f"{path.relative_to(REPO)} has CRLF line endings"
+        )
