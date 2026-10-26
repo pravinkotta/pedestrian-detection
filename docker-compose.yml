@@ -44,7 +44,7 @@ services:
       timeout: 8s
       retries: 3
       start_period: 60s
-    restart: unless-stopped
+    restart: always
     # memory ceiling — a runaway inference process should not eat the host
     mem_limit: 2g
 
@@ -75,5 +75,5 @@ services:
     volumes:
       - ./mlflow.db:/app/mlflow.db:ro
       - ./mlruns:/app/mlruns:ro
-    restart: unless-stopped
+    restart: always
     mem_limit: 2g

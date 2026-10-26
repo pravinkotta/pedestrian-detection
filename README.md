@@ -405,13 +405,19 @@ push to main ──▶ CI (5 jobs, ~9 min) ──▶ ghcr.io/…/pedestrian-dete
 so "did my deploy land?" is one `curl`, not a guess:
 
 ```powershell
-curl http://3.25.172.15:8000/health
+# The public IP is EPHEMERAL (no ec2:AllocateAddress permission) and moves on
+# every stop/start - look it up first, then keep LIVE_API_URL in sync:
+aws ec2 describe-instances --instance-ids i-084fbb0fb3cb86547 `
+  --query "Reservations[0].Instances[0].PublicIpAddress" --output text
+$API = "http://3.26.48.54:8000"    # current as of 2026-10-26
+
+curl ${API}/health
 # {"status":"ok","model_loaded":true}
 
-curl http://3.25.172.15:8000/model
+curl ${API}/model
 # … "git_sha":"b5223517c65a9c3b5352126c8c897ec30dcf586f", "backend":"onnx"
 
-curl -F "file=@data/val/val_0000.png;type=image/png" http://3.25.172.15:8000/detect
+curl -F "file=@data/val/val_0000.png;type=image/png" ${API}/detect
 # 5 detections, inference_ms ≈ 266 (CPU, t3.micro)
 ```
 
@@ -435,12 +441,41 @@ aws ec2 start-instances --instance-ids i-084fbb0fb3cb86547   # boots, redeploys 
 things live on the instance's EBS disk, so they survive stop/start: docker
 (`systemctl enable`), the `pedestrian-deployer` poller (it was `enable`d, so
 systemd starts it at every boot — and it recreates the container if it is
-missing), and the container's `--restart unless-stopped` policy. Give it
+missing), and the container's **`--restart always`** policy. Give it
 a minute or two after boot. What *does* change is the **public IP** (below),
 so re-point `LIVE_API_URL` or the scheduled drift run will honestly report
 ERROR against a dead URL.
 
-Caveats, stated plainly: the public IP (`3.25.172.15`) is **ephemeral** —
+> **Existing instances need one nudge.** `user-data.sh` only runs at *first*
+> boot, so an instance launched before the switch to `always` still runs the
+> old `unless-stopped` policy. Align it over SSH (your `AI-LLM` key, port 22):
+> ```powershell
+> ssh -i AI-LLM.pem ec2-user@<ip>
+> docker update --restart=always pedestrian-api    # running container, no restart needed
+> sudo sed -i 's/--restart unless-stopped/--restart always/' /usr/local/bin/pedestrian-deployer
+> docker inspect -f '{{.HostConfig.RestartPolicy.Name}}' pedestrian-api   # always
+> ```
+> The `sed` matters: it edits the poller script itself, so the stronger policy
+> survives the next container replacement too.
+
+**Stop/start runbook — the whole procedure, repeatable:**
+
+1. **Stop** — root console → EC2 → *Instance state → Stop* (your `admin` user
+   is denied `ec2:StopInstances`; billing stops, EBS ~$0.64/mo remains).
+2. **Start** — *Instance state → Start*, then give it **1–2 minutes**: boot →
+   docker → `pedestrian-deployer` polls → container up.
+3. **Find the new IP** (it always changes — no Elastic IP):
+   `aws ec2 describe-instances --instance-ids i-084fbb0fb3cb86547 --query "Reservations[0].Instances[0].PublicIpAddress" --output text`
+4. **Re-point the monitor:** `gh variable set LIVE_API_URL --body http://<new-ip>:8000`
+5. **Verify:** `curl http://<new-ip>:8000/health` → `ok`, and `/model` shows the
+   expected `git_sha` (on 2026-10-26 this alone proved the self-redeploy: the
+   box came back on the *newest* commit without anyone touching it).
+6. **Re-prime the drift capture** before 05:00 UTC — it resets whenever the
+   container is replaced, and the monitor needs ≥10 rows:
+   `1..24 | %{ curl -F "file=@data/val/val_0000.png;type=image/png" http://<new-ip>:8000/detect }`
+
+Caveats, stated plainly: the public IP (`3.26.48.54`, was `3.25.172.15` before
+the 2026-10-26 stop/start — it moves every time) is **ephemeral** —
 stopping and starting moves it (no `ec2:AllocateAddress` permission for an
 Elastic IP), so update any bookmark **and the `LIVE_API_URL` repo variable**
 (`gh variable set LIVE_API_URL --body http://<new-ip>:8000`). Port 8000 is open to the world and the

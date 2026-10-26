@@ -21,7 +21,7 @@ on:
   workflow_dispatch:
     inputs:
       url:
-        description: "API base URL (e.g. http://3.25.172.15:8000). Empty = use the LIVE_API_URL repo variable."
+        description: "API base URL (e.g. http://<instance-ip>:8000). Empty = use the LIVE_API_URL repo variable (always keep it current: the IP is ephemeral)."
         required: false
         default: ""
       simulate_night:

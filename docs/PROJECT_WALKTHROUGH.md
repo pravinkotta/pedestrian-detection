@@ -17,8 +17,11 @@
 > keyboard.
 
 **Repo:** https://github.com/pravinkotta/pedestrian-detection (public)
-**Live endpoint:** `http://3.25.172.15:8000` (`/health`, `/model`, `/detect`,
-`/monitor/features`) · **Headline metric:** *Recall @ FPR ≤ 1%* (safety
+**Live endpoint:** `http://3.26.48.54:8000` (`/health`, `/model`, `/detect`,
+`/monitor/features`) — *ephemeral IP: it moves on every stop/start; look it up
+with `aws ec2 describe-instances --instance-ids i-084fbb0fb3cb86547 --query
+"Reservations[0].Instances[0].PublicIpAddress" --output text` and keep the
+`LIVE_API_URL` repo variable in sync* · **Headline metric:** *Recall @ FPR ≤ 1%* (safety
 metric, not mAP — a missed pedestrian costs more than a false alarm).
 
 > 📖 **Reading this from the repo's front page?** This file *is* the tour —
@@ -332,7 +335,7 @@ $ python -m src.monitoring.drift --current <40 frames darkened to 25%>
 [DRIFT] DRIFT — 6/6 features drifted (share 1.000 vs limit 0.5)     exit 1
     DRIFT  brightness  p=4e-49   DRIFT  contrast  p=4e-49   …
 
-$ python -m src.monitoring.drift --url http://3.25.172.15:8000/monitor/features
+$ python -m src.monitoring.drift --url http://3.26.48.54:8000/monitor/features
 [DRIFT] OK — 1/6 features drifted (share 0.167 vs limit 0.5)        exit 0
     (18 real requests pulled live from the box; contrast alone p=0.047 —
      exactly the case the >50% dataset rule exists for)
@@ -412,7 +415,7 @@ cause → fix → lesson*.
 | `ec2:CreateKeyPair` | no new SSH keys | cloud-init bootstrap; existing `AI-LLM` key for human debugging only |
 | `ec2:CreateTags` | can't name the instance | identify by instance ID `i-084fbb0fb3cb86547` |
 | `ec2:AllocateAddress` | no Elastic IP | document the ephemeral IP; keep `LIVE_API_URL` repo var current |
-| `ec2:StopInstances` **and** `ec2:StartInstances` | the `admin` user cannot stop the box to stop billing (both verified `UnauthorizedOperation` on 2026-10-26) | documented honestly in the README instead of pretending the command works; needs root console or a policy update. Stop/start itself needs **no manual container work** — systemd `enable` + `--restart unless-stopped` are on disk |
+| `ec2:StopInstances` **and** `ec2:StartInstances` | the `admin` user cannot stop the box to stop billing (both verified `UnauthorizedOperation` on 2026-10-26) | documented honestly in the README instead of pretending the command works; needs root console or a policy update. Stop/start itself needs **no manual container work** — systemd `enable` + `--restart always` are on disk |
 | (allowed) `RunInstances`, SGs | launch + open 8000/22 | how the service exists at all |
 
 ECR repo was created while ECR was still the plan, then **deleted** once GHCR
@@ -525,7 +528,7 @@ this `admin` user cannot do the stop itself**: both `ec2:StopInstances` and
 `ec2:StartInstances` were verified denied (`UnauthorizedOperation`), so
 stopping means the root console or a policy update. Once stopped and started
 by someone with permission, **no container is started by hand** — docker, the
-`pedestrian-deployer` poller and the container's `--restart unless-stopped`
+`pedestrian-deployer` poller and the container's `--restart always`
 all live on the EBS disk and come back at boot (the poller even recreates a
 missing container); only the IP needs re-pointing. If the box dies,
 `/health` fails, nothing depends on it for training/CI, and `user-data.sh`
@@ -596,7 +599,7 @@ curl -F "file=@data/val/val_0000.png" http://127.0.0.1:8000/detect
 # ---- drift (Step 9) ----
 python -m src.monitoring.drift --current data/val                 # OK   -> 0
 python -m src.monitoring.drift --current <frames>                 # may DRIFT -> 1
-python -m src.monitoring.drift --url http://3.25.172.15:8000/monitor/features
+python -m src.monitoring.drift --url http://3.26.48.54:8000/monitor/features
 
 # ---- automation (Step 10) ----
 gh workflow run monitor.yml -f simulate_night=true   # demo the whole chain

@@ -56,7 +56,12 @@ deploy_once() {
     # Step 9: keep the drift capture log across container replacement.
     # 10001 = the unprivileged `app` user inside the image.
     mkdir -p /var/lib/pedestrian && chown 10001:10001 /var/lib/pedestrian
-    docker run -d --name "$CONTAINER" --restart unless-stopped \
+    # `--restart always`: this box exists to serve the API, so the container
+    # must come back on EVERY boot/daemon restart - even if someone manually
+    # stopped it while debugging (`unless-stopped` would stay down). Cost is
+    # gated by the INSTANCE state, not this flag: stopped instance = nothing
+    # runs at all; started instance = API live within ~1-2 min, unattended.
+    docker run -d --name "$CONTAINER" --restart always \
       -p 8000:8000 \
       -v /var/lib/pedestrian:/var/lib/pedestrian \
       -e FEATURES_LOG=/var/lib/pedestrian/features.jsonl \
