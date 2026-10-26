@@ -28,6 +28,7 @@ pip install -r requirements.txt
 
 | Layer | Command | Output |
 |-------|---------|--------|
+| Generate | `python -m src.data.generate` | `data/{train,val,test}/*.png` + `meta.json` |
 | Bronze | `python -m src.data.make_bronze` | `data/_bronze_manifest.json` |
 | Silver | `python -m src.data.convert_to_coco` | `data/interim/annotations/{train,val,test}.json` |
 | Gold | `python -m src.data.make_gold` | `data/processed/annotations/*.json` + `dataset_stats.json` |
@@ -285,6 +286,49 @@ ruff, the MLflow server) is deliberately excluded — see the header of
 Build context is **0.1 MB**, not 147 MB: `.dockerignore` excludes `data/`,
 `mlruns/`, `models/` and weights, which are mounted or fetched at runtime.
 
+## Stage 7 — GitHub Actions CI/CD
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) — four jobs, run in
+parallel (wall clock = the slowest one, not the sum):
+
+| job | what it proves | ~time |
+|---|---|---|
+| **lint** | `ruff check .` with `target-version = py310` from `ruff.toml` | <1 min |
+| **test** | rebuild dataset → smoke-train (so tests get a *real* checkpoint) → `pytest -q` | ~10 min |
+| **docker** | both image variants build; slim really has no `torch`; API boots model-less | ~5 min |
+| **train-and-gate** | full training → `src.registry.gate` **exit code** → `export_onnx --verify` → register `@challenger` | ~25 min |
+
+```yaml
+on:                      # every push to main, every PR, manual dispatch
+  push: { branches: [main] }
+  pull_request:
+  workflow_dispatch:
+```
+
+**CI clones a fresh VM, so the dataset is rebuilt, not assumed.** That exposed
+the first real gap in the pipeline: the generator (`make_scene()`) only lived
+inside `av_pedestrian_detection_faster_rcnn.ipynb`, a file that is *not* in
+the repo — meaning a clean checkout could never produce `data/`, and every
+data/model test would silently `pytest.skip`. It is now promoted to
+[`src/data/generate.py`](src/data/generate.py):
+
+```powershell
+python -m src.data.generate           # 380 frames, a few seconds
+python -m src.data.generate --check   # proves it reproduces data/meta.json
+```
+
+`--check` returns **0 only if a fresh regeneration equals the `meta.json`
+already on disk** — same seeds as the notebook (`1000 + 42 + split_index`),
+so the published statistics (380 frames, 1389 boxes) still hold. A test in
+`tests/test_generate.py` asserts the same thing on every run.
+
+**Nothing in CI needs a secret.** No AWS keys, no Docker Hub, no MLflow
+server — tracking is the local `mlflow.db` inside the runner. That is what
+makes the workflow safe to run on forked PRs.
+
+The gate report is uploaded as a build artifact on every run, so you can open
+`outputs/gate_report.json` from the Actions page without re-running anything.
+
 ## Repository policy (for GitHub Actions)
 
 CI clones a **fresh, empty VM** — it only ever sees committed files.
@@ -294,8 +338,9 @@ CI clones a **fresh, empty VM** — it only ever sees committed files.
 **Never committed** (see `.gitignore`): `data/`, `mlruns/`, `models/*.pt`, `.venv/`, `.env`.
 AWS credentials live in **GitHub Secrets**, not in the repo.
 
-> The synthetic dataset is regenerable from the notebook's `make_scene()` generator,
-> so CI can rebuild it without bloating the repo.
+> The synthetic dataset is regenerable with **`python -m src.data.generate`**
+> (the notebook's `make_scene()` generator, promoted into `src/data/`), so CI
+> can rebuild it from an empty checkout without bloating the repo.
 
 ## Roadmap
 
@@ -306,7 +351,8 @@ AWS credentials live in **GitHub Secrets**, not in the repo.
 - [x] Step 4 — evaluation gate (exit 0/1/2) + MLflow registry with aliases + 13 tests
 - [x] Step 5 — FastAPI serving (health / model / detect) + 12 API tests
 - [x] Step 6 — Docker + ONNX serving (two image variants, parity tests) + 9 ONNX tests
-- [ ] Step 7 — GitHub Actions CI/CD
+- [x] Step 7 — GitHub Actions CI/CD (4 parallel jobs: lint, test, docker, train+gate)
+  + dataset generator promoted out of the notebook so a clean checkout can rebuild `data/`
 - [ ] Step 8 — AWS ECS Fargate
 - [ ] Step 9 — Evidently drift monitor
 - [ ] Step 10 — HITL gate + retrain trigger

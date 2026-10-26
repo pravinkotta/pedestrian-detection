@@ -1,0 +1,197 @@
+# =============================================================================
+# CI — lint, tests, container build and the model gate (mentor diagram:
+# "GitHub Actions CI/CD").
+#
+# Design notes:
+#   * CI clones a fresh, empty VM. It only ever sees committed files, so the
+#     dataset is REBUILT from src/data/generate.py (the notebook's generator,
+#     promoted into the repo) rather than assumed to exist.
+#   * jobs run in parallel; the wall clock is the slowest one, not the sum.
+#   * `train-and-gate` is the *automatic* half of the ship gate: it re-trains,
+#     evaluates, and lets src/registry/gate.py's exit code decide whether the
+#     run may be registered. Nothing promotes itself to @champion here —
+#     that is Step 8's deploy job, after a human has looked at it.
+# =============================================================================
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.10"
+  MLFLOW_DISABLE_AGENT_HINT: "1"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1. Style / static checks — the fastest signal, so it runs first alone.
+  # ---------------------------------------------------------------------------
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install ruff
+        run: pip install ruff
+
+      # ruff.toml pins target-version=py310 — without it ruff assumes 3.11 and
+      # "fixes" datetime.now(timezone.utc) into datetime.UTC, which does not
+      # exist on the interpreter we ship.
+      - name: ruff check
+        run: ruff check .
+
+  # ---------------------------------------------------------------------------
+  # 2. Data pipeline + test suite. Builds the dataset, smoke-trains so the
+  #    tests get a REAL checkpoint (otherwise every model/ONNX test skips),
+  #    then runs the whole suite.
+  # ---------------------------------------------------------------------------
+  test:
+    name: Data + tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install CPU-only torch first
+        # PyPI serves CUDA wheels on Linux (~2.5 GB); the CPU index is ~200 MB
+        # and is what a CI runner can actually use.
+        run: pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Rebuild the dataset (Bronze source)
+        run: |
+          python -m src.data.generate
+          python -m src.data.make_bronze
+          python -m src.data.convert_to_coco
+          python -m src.data.make_gold
+
+      - name: Smoke train (produces models/model.pt for the test suite)
+        run: python -m src.experiments.run_experiment --smoke --run-name ci-smoke
+
+      - name: pytest
+        run: pytest -q
+
+      - name: Upload the gate report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-report-test-job
+          path: outputs/gate_report.json
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
+  # 3. Container build. Two variants from one Dockerfile (Step 6), plus the
+  #    claim that the slim image really ships without PyTorch.
+  # ---------------------------------------------------------------------------
+  docker:
+    name: Docker images
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the default image (torch + onnx)
+        run: docker build -t pedestrian-api:ci .
+
+      - name: Build the slim image (onnx only)
+        run: docker build --build-arg INSTALL_TORCH=0 -t pedestrian-api:ci-slim .
+
+      - name: The slim image must not contain torch
+        run: |
+          docker run --rm pedestrian-api:ci-slim python -c "
+          import importlib.util as u, sys
+          torch = u.find_spec('torch') is not None
+          ort = u.find_spec('onnxruntime') is not None
+          print(f'torch installed: {torch} | onnxruntime installed: {ort}')
+          sys.exit(1 if torch or not ort else 0)
+          "
+
+      - name: The API must boot with no model on disk
+        # /health returns 200 with model_loaded=false by design: a container
+        # that cannot load its model should be replaced, not left crashing,
+        # and the reason must stay visible on /model.
+        run: |
+          docker run -d --name api -p 8000:8000 pedestrian-api:ci-slim
+          for i in $(seq 1 30); do
+            sleep 3
+            body=$(curl -sf http://127.0.0.1:8000/health || true)
+            if [ -n "$body" ]; then echo "$body"; break; fi
+          done
+          echo "$body" | grep -q '"status"'
+          curl -sf http://127.0.0.1:8000/model | grep -q '"status"'
+          docker rm -f api
+
+  # ---------------------------------------------------------------------------
+  # 4. The ship gate: full training -> evaluation gate -> ONNX parity ->
+  #    register as challenger. This is where a bad model is stopped by an exit
+  #    code instead of by hope.
+  # ---------------------------------------------------------------------------
+  train-and-gate:
+    name: Train + ship gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install CPU-only torch first
+        run: pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Rebuild the dataset
+        run: |
+          python -m src.data.generate
+          python -m src.data.make_bronze
+          python -m src.data.convert_to_coco
+          python -m src.data.make_gold
+
+      - name: Train + track with MLflow
+        run: python -m src.experiments.run_experiment --run-name "ci-${GITHUB_SHA::7}"
+
+      - name: Evaluation gate (exit code is the verdict)
+        run: python -m src.registry.gate
+
+      - name: ONNX export + parity check
+        run: python -m src.models.export_onnx --verify
+
+      - name: Register the run with the @challenger alias
+        run: |
+          RUN_ID=$(python -c "import sqlite3; print(sqlite3.connect('mlflow.db').execute('select run_uuid from runs order by start_time desc limit 1').fetchone()[0])")
+          echo "registering run $RUN_ID"
+          python -m src.registry.register --run "$RUN_ID" --alias challenger
+
+      - name: Upload the gate report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-report
+          path: outputs/gate_report.json
+          if-no-files-found: ignore
