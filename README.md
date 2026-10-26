@@ -504,6 +504,73 @@ logged for observability but are *prediction* drift (model-output), a
 different signal from input drift — Step 10's gate/retrain logic is where
 those belong.
 
+## Stage 10 — HITL gate + retrain trigger
+
+The last link of the mentor's board. Two workflows, one human decision:
+
+| workflow | trigger | what it does |
+|---|---|---|
+| [`monitor.yml`](.github/workflows/monitor.yml) | daily cron + manual | rebuilds the baseline, pulls live features from the box over HTTP, writes the verdict into the run summary — and **on DRIFT, dispatches `retrain.yml` automatically** |
+| [`retrain.yml`](.github/workflows/retrain.yml) | manual or from `monitor.yml` | **blocks on the `hitl` environment** → on approval: train → gate → ONNX parity → `@challenger` → publish to GHCR → box self-updates ≤5 min |
+
+```
+        ┌── daily (cron 05:00 UTC) ─────────────────────────────┐
+        │                                                       ▼
+  live box /monitor/features ──▶ monitor.yml ── verdict ── OK? ──▶ green, stop
+                                     │
+                                  DRIFT (exit 1, red run)
+                                     │  gh workflow run retrain.yml
+                                     ▼
+                              retrain.yml: job `approval`
+                              environment: hitl  ◀──── ⛔ WAITS HERE
+                                                      required reviewer =
+                                                      you, on GitHub, click
+                                                      Approve (or Reject)
+                                     │ approved
+                                     ▼
+                     train → gate (exit code!) → ONNX parity → @challenger
+                                     │ PASS
+                                     ▼
+                        publish :latest to GHCR ──▶ EC2 box re-pulls (≤5 min)
+```
+
+**The HITL mechanism is GitHub Environments, not custom code**: the `hitl`
+environment has a `required_reviewers` protection rule, so any run touching
+it parks in *Waiting* until a human approves. The approval is logged (who,
+when, the reason input) in the run summary — an audit trail for free. Repo
+command that created it:
+
+```powershell
+gh api -X PUT repos/<owner>/<repo>/environments/hitl --input - `
+  '{"reviewers":[{"type":"User","id":<your user id>}]}'
+```
+
+Properties worth stating:
+
+- **Nothing retrains by itself.** Drift only *requests* a retrain; the
+  compute starts after a person says yes. Rejecting costs nothing — the run
+  simply ends.
+- **Approval is not a quality gate.** Even after approval, `gate.py`'s exit
+  code still decides whether the model is publishable: a human opens the
+  door, the metrics decide what may walk through it.
+- **`monitor.yml` installs `requirements-monitor.txt`** — a lean toolchain
+  (no torch): the drift job never trains, so it should not pay for a 200 MB
+  wheel on every scheduled run.
+- **Zero secrets, still.** The auto-trigger uses the built-in `GITHUB_TOKEN`
+  with `actions: write`; GitHub deliberately lets `workflow_dispatch` cascade
+  from it (every other event type is blocked to prevent recursion). A test
+  (`tests/test_workflows.py`) fails the build if any workflow ever references
+  a stored secret.
+- **`simulate_night=true` input** demonstrates the whole chain on demand:
+  it compares against artificially darkened frames (guaranteed DRIFT), which
+  dispatches the retrain, which then visibly *waits for your approval*.
+
+Known limits, stated up front: the live URL lives in the `LIVE_API_URL` repo
+variable (update it when the box's ephemeral IP changes); scheduled workflows
+on public repos pause after 60 days without activity (any push re-enables
+them); and with one reviewer, "four-eyes" would be the next hardening step
+(`prevent_self_review: true` + a second reviewer).
+
 ## Repository policy (for GitHub Actions)
 
 CI clones a **fresh, empty VM** — it only ever sees committed files.
@@ -533,4 +600,4 @@ only in this machine's `~/.aws/credentials`.
   + dataset generator promoted out of the notebook so a clean checkout can rebuild `data/`
 - [x] Step 8 — AWS deploy: EC2 t3.micro + GHCR auto-pull, zero secrets (Fargate skipped for cost)
 - [x] Step 9 — Evidently drift monitor: features from live traffic, K-S per column, 0/1/2 verdict + 19 tests
-- [ ] Step 10 — HITL gate + retrain trigger
+- [x] Step 10 — HITL gate (GitHub environment `hitl`, required reviewer) + drift-triggered retrain, zero secrets enforced by test

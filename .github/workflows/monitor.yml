@@ -1,0 +1,133 @@
+# =============================================================================
+# MONITOR — the drift half of your mentor's loop (Steps 9 -> 10):
+#
+#     Evidently Drift Monitor  ->  HITL Gate (high-risk)  ->  Retrain Trigger
+#
+# What this workflow does, in order:
+#   1. rebuilds the training-split baseline (CI sees a fresh VM, always);
+#   2. runs src.monitoring.drift against the LIVE box's captured features
+#      over plain HTTP (zero credentials, same as every other hop here);
+#   3. writes the JSON report into the run summary;
+#   4. on DRIFT -> auto-dispatches retrain.yml, which IMMEDIATELY blocks on
+#      the `hitl` environment (a human must click Approve before any
+#      retraining money is spent). That pause is your mentor's HITL gate.
+#
+# The exit code is the verdict, same contract as src.registry.gate:
+#   0 = OK (green)   1 = DRIFT (red + retrain dispatched)   2 = ERROR (red)
+# =============================================================================
+name: Monitor (drift)
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: "API base URL (e.g. http://3.25.172.15:8000). Empty = use the LIVE_API_URL repo variable."
+        required: false
+        default: ""
+      simulate_night:
+        description: "Demo the full chain: compare against darkened frames (guaranteed DRIFT) instead of live traffic."
+        type: boolean
+        default: false
+  schedule:
+    - cron: "0 5 * * *"   # daily, 05:00 UTC
+
+# Auto-dispatching retrain.yml needs actions:write. GITHUB_TOKEN events do
+# not cascade into new runs — EXCEPT workflow_dispatch, which is how the
+# trigger below is allowed to work without any PAT or secret.
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: monitor
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.10"
+  MLFLOW_DISABLE_AGENT_HINT: "1"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  drift:
+    name: Drift check (live vs reference)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements-monitor.txt
+
+      # No torch here on purpose — see the header of requirements-monitor.txt.
+      - name: Install the monitoring toolchain
+        run: pip install -r requirements-monitor.txt
+
+      - name: Rebuild the reference baseline (gold train split)
+        run: python -m src.data.generate
+
+      - name: Run the drift monitor
+        id: monitor
+        env:
+          INPUT_URL: ${{ inputs.url }}
+          SIMULATE: ${{ inputs.simulate_night }}
+          LIVE_API_URL: ${{ vars.LIVE_API_URL }}
+        run: |
+          set +e
+          if [ "$SIMULATE" = "true" ]; then
+            echo "::warning::SIMULATION mode: darkened frames guarantee a DRIFT verdict (chain demo)"
+            python -c "from pathlib import Path; from PIL import Image, ImageEnhance; src=Path('data/val'); dst=Path('outputs/night_frames'); dst.mkdir(parents=True, exist_ok=True); [ImageEnhance.Brightness(Image.open(p).convert('RGB')).enhance(0.25).save(dst/p.name) for p in sorted(src.glob('*.png'))[:40]]; print('darkened frames:', len(list(dst.glob('*.png'))))"
+            python -m src.monitoring.drift --current outputs/night_frames \
+              --report outputs/drift_report.json --html=
+            code=$?
+          else
+            BASE="${INPUT_URL:-$LIVE_API_URL}"
+            if [ -z "$BASE" ]; then
+              echo "no URL: pass the 'url' input or set the LIVE_API_URL repo variable"
+              code=2
+            else
+              python -m src.monitoring.drift --url "$BASE/monitor/features" \
+                --report outputs/drift_report.json --html=
+              code=$?
+            fi
+          fi
+          case "$code" in
+            0) verdict=OK ;;
+            1) verdict=DRIFT ;;
+            *) verdict=ERROR ;;
+          esac
+          echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
+          echo "monitor exit $code -> verdict $verdict"
+          exit "$code"
+
+      - name: Write the run summary
+        if: ${{ !cancelled() }}
+        env:
+          VERDICT: ${{ steps.monitor.outputs.verdict }}
+        run: |
+          {
+            echo "## Drift verdict: $VERDICT"
+            echo ""
+            if [ -f outputs/drift_report.json ]; then
+              echo '```json'
+              cat outputs/drift_report.json
+              echo '```'
+            else
+              echo "_no report produced (monitor error above)_"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # THE RETRAIN TRIGGER. Runs even though the monitor step failed (that
+      # failure IS the drift signal). The retrain it starts will sit waiting
+      # on the `hitl` environment until a human approves — nothing retrains
+      # by itself.
+      - name: Retrain trigger (dispatch the HITL-gated workflow)
+        if: ${{ !cancelled() && steps.monitor.outputs.verdict == 'DRIFT' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          gh workflow run retrain.yml -f "reason=drift detected by monitor run $RUN_ID"
+          echo "retrain.yml dispatched - it is now waiting for HITL approval"

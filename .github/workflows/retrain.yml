@@ -1,0 +1,184 @@
+# =============================================================================
+# RETRAIN — the last link of your mentor's loop:
+#
+#     Evidently Drift Monitor -> HITL Gate (high-risk) -> Retrain Trigger
+#
+# Started two ways, both human-visible:
+#   * manually      (workflow_dispatch, with a reason)
+#   * automatically (monitor.yml, when the drift verdict is DRIFT)
+#
+# Either way it stops dead at the first job: `approval` targets the `hitl`
+# GitHub environment, which has a REQUIRED REVIEWER rule. Until a human
+# clicks Approve on the run, nothing below it executes — no training minutes,
+# no new model, no image, no deploy. When approval lands, the chain is the
+# same one CI runs on every push: train -> gate (exit code) -> ONNX parity ->
+# register @challenger -> publish to GHCR, where the EC2 box picks it up.
+#
+# Why the jobs below mirror ci.yml's train-and-gate/publish instead of
+# sharing them: a reusable workflow would have to restructure the green,
+# reviewed CI pipeline (workflow_call inputs can't cleanly parameterize the
+# environment gate), and a wrong refactor there silently weakens the ship
+# gate. Duplication with an honest comment is the cheaper risk. If they ever
+# diverge, the fix is to extract a reusable workflow — flagged, not hidden.
+# =============================================================================
+name: Retrain (HITL-gated)
+
+on:
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: "Why is a retrain being requested? Shown to the reviewer before they approve."
+        required: false
+        default: "manual retrain"
+
+# packages:write is how the approved run publishes to GHCR — the same
+# GITHUB_TOKEN CI already uses. Still zero stored secrets.
+permissions:
+  contents: read
+  packages: write
+
+env:
+  PYTHON_VERSION: "3.10"
+  MLFLOW_DISABLE_AGENT_HINT: "1"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 0. THE HITL GATE. `environment: hitl` has a required_reviewers protection
+  #    rule, so this job sits in "Waiting" until a human approves the run.
+  #    This is the only place in the whole pipeline where progress depends on
+  #    a person — deliberately, and only for the high-risk action (spending
+  #    compute to change the shipped model).
+  # ---------------------------------------------------------------------------
+  approval:
+    name: "HITL approval (human decides)"
+    runs-on: ubuntu-latest
+    # Generous: if the approval wait ever counts against job time, a slow
+    # human must not be able to kill the run.
+    timeout-minutes: 120
+    environment:
+      name: hitl
+    steps:
+      - name: Record who approved what
+        env:
+          REASON: ${{ inputs.reason }}
+        run: |
+          {
+            echo "## Retrain approved"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| approved by | \`${{ github.actor }}\` |"
+            echo "| requested by | \`${{ github.triggering_actor }}\` |"
+            echo "| reason | $REASON |"
+            echo "| approved at | $(date -u +%FT%TZ) |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  # 1. Retrain + ship gate — identical contract to ci.yml's train-and-gate:
+  #    src.registry.gate's EXIT CODE decides, not a human, not a log reader.
+  # ---------------------------------------------------------------------------
+  train-and-gate:
+    name: Retrain + ship gate
+    needs: approval
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install CPU-only torch first
+        run: pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Rebuild the dataset
+        run: |
+          python -m src.data.generate
+          python -m src.data.make_bronze
+          python -m src.data.convert_to_coco
+          python -m src.data.make_gold
+
+      - name: Retrain with MLflow tracking
+        run: python -m src.experiments.run_experiment --run-name "retrain-${GITHUB_RUN_ID}"
+
+      - name: Evaluation gate (exit code is the verdict)
+        run: python -m src.registry.gate
+
+      - name: ONNX export + parity check
+        run: python -m src.models.export_onnx --verify
+
+      - name: Register the run with the @challenger alias
+        run: |
+          RUN_ID=$(python -c "import sqlite3; print(sqlite3.connect('mlflow.db').execute('select run_uuid from runs order by start_time desc limit 1').fetchone()[0])")
+          echo "registering run $RUN_ID"
+          python -m src.registry.register --run "$RUN_ID" --alias challenger
+
+      - name: Upload the exported model
+        uses: actions/upload-artifact@v7
+        with:
+          name: model-retrain
+          path: models/model.onnx
+          if-no-files-found: error
+
+      - name: Upload the gate report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: gate-report-retrain
+          path: outputs/gate_report.json
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
+  # 2. Publish — same image recipe as ci.yml's deploy job, so the box cannot
+  #    tell a push-deploy from an approved retrain: it pulls :latest either
+  #    way, every 5 minutes. A gate failure above skips this job entirely:
+  #    a bad retrain never reaches production.
+  # ---------------------------------------------------------------------------
+  publish:
+    name: Publish retrained model
+    needs: train-and-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build the base image (slim, ONNX only)
+        run: docker build --build-arg INSTALL_TORCH=0 -t pedestrian-api:slim .
+
+      - name: Download the retrained model
+        uses: actions/download-artifact@v8
+        with:
+          name: model-retrain
+          path: artifact
+
+      - name: Build the deploy image (base + weights)
+        run: |
+          mkdir -p models
+          find artifact -name 'model.onnx' -exec cp {} models/model.onnx \;
+          ls -la models/model.onnx
+          docker build -f Dockerfile.deploy \
+            --build-arg BASE_IMAGE=pedestrian-api:slim \
+            --build-arg GIT_SHA="${GITHUB_SHA}" \
+            -t pedestrian-api:deploy .
+
+      - name: Push to GHCR
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | \
+            docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          IMG="ghcr.io/${{ github.repository }}"
+          docker tag pedestrian-api:deploy "${IMG}:latest"
+          docker tag pedestrian-api:deploy "${IMG}:retrain-${GITHUB_RUN_ID}"
+          docker push "${IMG}:latest"
+          docker push "${IMG}:retrain-${GITHUB_RUN_ID}"
+          echo "published ${IMG}:latest (instance poller picks it up <=5 min)"

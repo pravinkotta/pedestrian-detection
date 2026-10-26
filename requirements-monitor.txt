@@ -1,0 +1,14 @@
+# Monitoring / drift workflows (Step 10) — the LEAN toolchain.
+#
+# The drift job never trains and never serves: it rebuilds the image baseline
+# (src.data.generate needs numpy + Pillow only), extracts features, and runs
+# Evidently. Installing full requirements.txt would drag CPU torch (~200 MB)
+# onto the runner for code this job does not import.
+#
+# Keep the version floors in sync with requirements.txt.
+numpy>=1.26
+Pillow>=10.0
+pyyaml>=6.0
+pandas>=2.1
+pyarrow>=14.0
+evidently>=0.7.23,<0.8
