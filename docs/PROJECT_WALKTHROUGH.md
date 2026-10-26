@@ -412,6 +412,7 @@ cause → fix → lesson*.
 | `ec2:CreateKeyPair` | no new SSH keys | cloud-init bootstrap; existing `AI-LLM` key for human debugging only |
 | `ec2:CreateTags` | can't name the instance | identify by instance ID `i-084fbb0fb3cb86547` |
 | `ec2:AllocateAddress` | no Elastic IP | document the ephemeral IP; keep `LIVE_API_URL` repo var current |
+| `ec2:StopInstances` **and** `ec2:StartInstances` | the `admin` user cannot stop the box to stop billing (both verified `UnauthorizedOperation` on 2026-10-26) | documented honestly in the README instead of pretending the command works; needs root console or a policy update. Stop/start itself needs **no manual container work** — systemd `enable` + `--restart unless-stopped` are on disk |
 | (allowed) `RunInstances`, SGs | launch + open 8000/22 | how the service exists at all |
 
 ECR repo was created while ECR was still the plan, then **deleted** once GHCR
@@ -429,6 +430,7 @@ won — no dead resources left in the account.
 | `--html ""` → "expected one argument" | PS drops the empty argument | pass `--html=` |
 | `gh variable set` → "not a git repository" | `gh` resolves the repo from cwd | run inside the repo |
 | one-off `read tcp … failed to respond` from api.github.com | transient network blip | retry — same class as F3 |
+| **`aws ec2 wait instance-stopped` hung for 10 min** (2026-10-26) | the `stop-instances` call *before* it had **failed on IAM** — `wait` polls for a state that will never arrive and never re-checks why | check `$LASTEXITCODE` after the operation you're waiting on, *before* calling `wait`; and bound every wait with a timeout (`timeout-minutes`, `--cli-read-timeout`) |
 
 ### D. Lint / hygiene (ruff kept us honest)
 
@@ -518,9 +520,16 @@ nothing — swapping in a real dataset is a change to `src/data/` only.
 
 **What happens when the box's IP changes or it dies?**
 Stop/start moves the ephemeral IP (no `AllocateAddress` permission) — update
-the `LIVE_API_URL` repo variable; monitoring then keeps working. If the box
-dies, `/health` fails, nothing depends on it for training/CI, and
-`user-data.sh` rebuilds it from scratch (it has no state worth saving).
+the `LIVE_API_URL` repo variable; monitoring then keeps working. **Note that
+this `admin` user cannot do the stop itself**: both `ec2:StopInstances` and
+`ec2:StartInstances` were verified denied (`UnauthorizedOperation`), so
+stopping means the root console or a policy update. Once stopped and started
+by someone with permission, **no container is started by hand** — docker, the
+`pedestrian-deployer` poller and the container's `--restart unless-stopped`
+all live on the EBS disk and come back at boot (the poller even recreates a
+missing container); only the IP needs re-pointing. If the box dies,
+`/health` fails, nothing depends on it for training/CI, and `user-data.sh`
+rebuilds it from scratch (it has no state worth saving).
 
 **How do you know a deploy landed?**
 `curl /model` → `git_sha` is the commit the image was built from. For the
@@ -561,7 +570,10 @@ isolates failure: monitor red ≠ CI red.
    `:latest` on the box.
 7. **Extract the reusable workflow** (noted in `retrain.yml`'s header) once
    the two copies have drifted enough to justify the refactor risk.
-8. **Cost** — stop the instance when not demoing (`aws ec2 stop-instances`).
+8. **Cost** — stop the instance when not demoing. Blocked *today*: the `admin`
+   user is denied `ec2:StopInstances`/`StartInstances` (§4B), so this needs
+   the root console or ~2 lines added to the IAM policy — worth doing, since
+   it's the one thing standing between the project and "stop paying".
 
 ---
 
@@ -593,6 +605,9 @@ gh run list; gh run watch <id>
 
 # ---- AWS ----
 aws ec2 describe-instances --instance-ids i-084fbb0fb3cb86547
+# stop/start: correct commands, but the `admin` user is DENIED both actions —
+# run them from the root console (or after a policy update), then re-point:
+#   gh variable set LIVE_API_URL --body http://<new-ip>:8000
 aws ec2 stop-instances   --instance-ids i-084fbb0fb3cb86547   # stop paying
 aws ec2 start-instances  --instance-ids i-084fbb0fb3cb86547   # self-redeploys
 ```

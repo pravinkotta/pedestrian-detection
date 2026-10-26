@@ -422,13 +422,28 @@ the box replaced its own container 3½ minutes later, `git_sha` flipping from
 **Day-2 operations**
 
 ```powershell
+# ⚠ VERIFIED 2026-10-26: the `admin` IAM user can run NEITHER of these —
+#   ec2:StopInstances and ec2:StartInstances both return UnauthorizedOperation.
+#   Stopping the box therefore needs the root console (or the account owner
+#   must add those two actions to the admin policy). Kept here as the correct
+#   command for whoever does have the permission.
 aws ec2 stop-instances  --instance-ids i-084fbb0fb3cb86547   # stop paying (~$9.6/mo)
 aws ec2 start-instances --instance-ids i-084fbb0fb3cb86547   # boots, redeploys itself
 ```
 
+**If it is stopped and started, there is nothing to restart by hand.** Three
+things live on the instance's EBS disk, so they survive stop/start: docker
+(`systemctl enable`), the `pedestrian-deployer` poller (it was `enable`d, so
+systemd starts it at every boot — and it recreates the container if it is
+missing), and the container's `--restart unless-stopped` policy. Give it
+a minute or two after boot. What *does* change is the **public IP** (below),
+so re-point `LIVE_API_URL` or the scheduled drift run will honestly report
+ERROR against a dead URL.
+
 Caveats, stated plainly: the public IP (`3.25.172.15`) is **ephemeral** —
 stopping and starting moves it (no `ec2:AllocateAddress` permission for an
-Elastic IP), so update any bookmark. Port 8000 is open to the world and the
+Elastic IP), so update any bookmark **and the `LIVE_API_URL` repo variable**
+(`gh variable set LIVE_API_URL --body http://<new-ip>:8000`). Port 8000 is open to the world and the
 API has **no auth** — fine for a demo, put it behind a reverse proxy or an ALB
 with auth before serving real traffic. Debugging shell access needs your
 `AI-LLM` key pair (port 22 is open); this agent never holds it.
