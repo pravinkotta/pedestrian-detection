@@ -47,3 +47,10 @@ Thumbs.db
 .ruff_cache/
 .coverage
 htmlcov/
+
+# ============ Private reference — local only, never committed ============
+# The full walkthrough (markdown + the PDF export) is my own study/interview
+# reference, not part of the deliverable. Ignored so `git add -A` can never
+# pick it up.
+docs/PROJECT_WALKTHROUGH.md
+docs/PROJECT_WALKTHROUGH.pdf
