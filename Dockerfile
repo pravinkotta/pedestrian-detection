@@ -82,7 +82,12 @@ ENV PYTHONUNBUFFERED=1 \
 RUN apt-get update \
     && apt-get install -y --no-install-recommends libgomp1 curl \
     && rm -rf /var/lib/apt/lists/* \
-    && useradd --create-home --uid 10001 --shell /usr/sbin/nologin app
+    && useradd --create-home --uid 10001 --shell /usr/sbin/nologin app \
+    # Step 9: state dir for the drift capture log. The unprivileged app user
+    # must be able to append to it; deploy/user-data.sh bind-mounts it so rows
+    # survive container replacement.
+    && mkdir -p /var/lib/pedestrian \
+    && chown app:app /var/lib/pedestrian
 
 WORKDIR /app
 

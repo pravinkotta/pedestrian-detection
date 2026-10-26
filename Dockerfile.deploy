@@ -35,4 +35,13 @@ ENV GIT_SHA=${GIT_SHA}
 # auto-backend is inherited, but onnx is explicit: this variant carries no
 # torch, and `auto` must never be left to guess in production.
 ENV SERVE_BACKEND=onnx
+
+# Step 9: capture input features for the drift monitor. Only aggregates are
+# written (no images), the file self-rotates at 5 MB, and capture failure can
+# never fail a request (api.main._capture swallows it). Without a bind mount
+# this file lives on the container's writable layer — it resets whenever a
+# deploy replaces the container; user-data.sh adds the volume for new
+# instances.
+ENV FEATURES_LOG=/var/lib/pedestrian/features.jsonl
+
 COPY models/model.onnx /app/models/model.onnx

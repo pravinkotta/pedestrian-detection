@@ -53,8 +53,14 @@ deploy_once() {
   have=$(docker inspect -f '{{.Image}}' "$CONTAINER" 2>/dev/null || echo none)
   if [ "$want" != "$have" ]; then
     docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+    # Step 9: keep the drift capture log across container replacement.
+    # 10001 = the unprivileged `app` user inside the image.
+    mkdir -p /var/lib/pedestrian && chown 10001:10001 /var/lib/pedestrian
     docker run -d --name "$CONTAINER" --restart unless-stopped \
-      -p 8000:8000 "$IMAGE" || return 1
+      -p 8000:8000 \
+      -v /var/lib/pedestrian:/var/lib/pedestrian \
+      -e FEATURES_LOG=/var/lib/pedestrian/features.jsonl \
+      "$IMAGE" || return 1
     echo "[deployer] $(date -Is) deployed ${want#sha256:} (was ${have#sha256:})"
   fi
 }

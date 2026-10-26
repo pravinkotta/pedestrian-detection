@@ -73,3 +73,18 @@ class ModelInfo(BaseModel):
 class HealthResponse(BaseModel):
     status: Literal["ok", "degraded"]
     model_loaded: bool
+
+
+class MonitorFeaturesResponse(BaseModel):
+    capture: Literal["on", "off"] = Field(
+        description="'on' when FEATURES_LOG points at a writable file.",
+    )
+    source: str | None = Field(
+        default=None,
+        description="Path of the capture log inside the container.",
+    )
+    count: int = Field(description="Rows returned (the most recent window).")
+    rows: list[dict] = Field(
+        description="One row of input features per captured request "
+                    "(plus n_detections/mean_score/inference_ms/ts). "
+                    "Aggregates only — no pixels are ever stored.",)

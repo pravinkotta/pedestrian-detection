@@ -188,7 +188,7 @@ def test_detect_returns_503_when_model_unavailable(client):
 def test_openapi_schema_exposes_all_endpoints(client):
     schema = client.get("/openapi.json").json()
     paths = set(schema["paths"])
-    assert {"/", "/health", "/model", "/detect"} <= paths
+    assert {"/", "/health", "/model", "/detect", "/monitor/features"} <= paths
 
 
 def test_upload_accepts_jpeg_too(client):
@@ -199,3 +199,55 @@ def test_upload_accepts_jpeg_too(client):
     res = client.post("/detect",
                       files={"file": ("f.jpg", buf.getvalue(), "image/jpeg")})
     assert res.status_code == 200, res.text
+
+
+# --------------------------------------------------------------------------
+# Step 9 — input-feature capture for the drift monitor
+# --------------------------------------------------------------------------
+def test_detect_captures_features_when_capture_enabled(client, tmp_path,
+                                                        monkeypatch):
+    """One served frame -> one feature row (aggregates only, no pixels)."""
+    from src.monitoring.features import read_rows
+
+    log = tmp_path / "features.jsonl"
+    monkeypatch.setenv("FEATURES_LOG", str(log))
+
+    res = client.post("/detect",
+                      files={"file": ("f.png", _sample_image_bytes(),
+                                      "image/png")})
+    assert res.status_code == 200, res.text
+
+    rows = read_rows(log)
+    assert len(rows) == 1
+    row = rows[0]
+    assert {"brightness", "contrast", "sharpness",
+            "width", "height"} <= set(row)
+    assert row["width"] == 256 and row["height"] == 192
+    assert row["inference_ms"] > 0
+    assert "ts" in row and "n_detections" in row
+
+    # ...and the drift job's pull endpoint sees exactly that row
+    body = client.get("/monitor/features").json()
+    assert body["capture"] == "on"
+    assert body["count"] == 1
+    assert body["rows"][0]["brightness"] == pytest.approx(row["brightness"])
+
+
+def test_monitor_endpoint_says_capture_is_off_by_default(client, monkeypatch):
+    """'no drift' and 'not watching' must be distinguishable."""
+    monkeypatch.delenv("FEATURES_LOG", raising=False)
+    body = client.get("/monitor/features").json()
+    assert body == {"capture": "off", "source": None, "count": 0, "rows": []}
+
+
+def test_failed_capture_never_breaks_inference(client, tmp_path, monkeypatch):
+    """FEATURES_LOG points somewhere unwritable -> /detect still serves."""
+    blocker = tmp_path / "not_a_directory"
+    blocker.write_text("i am a file, not a dir", encoding="utf-8")
+    monkeypatch.setenv("FEATURES_LOG", str(blocker / "features.jsonl"))
+
+    res = client.post("/detect",
+                      files={"file": ("f.png", _sample_image_bytes(),
+                                      "image/png")})
+    assert res.status_code == 200, res.text
+    assert res.json()["detections"] is not None

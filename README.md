@@ -428,6 +428,82 @@ API has **no auth** — fine for a demo, put it behind a reverse proxy or an ALB
 with auth before serving real traffic. Debugging shell access needs your
 `AI-LLM` key pair (port 22 is open); this agent never holds it.
 
+## Stage 9 — Drift monitor (Evidently)
+
+The gate proved the model was good **on the day it shipped**. Drift monitoring
+answers the follow-up question: *are today's inputs still the inputs it was
+trained on?* A detector tuned on daylight frames can quietly become a bad
+detector the night the cameras face a different world — with no code change,
+no failing test, and no error anywhere.
+
+### How it sees the world (features, not pixels)
+
+Evidently compares **tabular columns**, so every frame is summarised into one
+row of ~9 numbers ([`src/monitoring/features.py`](src/monitoring/features.py)):
+
+| feature | what a shift would mean |
+|---|---|
+| `brightness`, `contrast` | night/fog/overcast — different operating conditions |
+| `sharpness` (Laplacian variance) | dirty or defocused lens |
+| `r_mean`, `g_mean`, `b_mean` | white-balance / colour cast change |
+| `width`, `height`, `aspect_ratio` | resolution or cropping changed |
+
+Only **aggregates** are stored — never the image itself — so the capture log
+is cheap (9 floats/request) and safe to keep where raw frames would not be.
+
+### The loop
+
+```
+POST /detect ──▶ _capture() appends a row ──▶ /var/lib/pedestrian/features.jsonl
+                                                     │  (self-rotating, 5 MB cap)
+       python -m src.monitoring.drift --url …/monitor/features
+                     │
+                     ├─ reference: gold TRAIN split features (cached parquet)
+                     ├─ per column: K-S test, p < 0.05 ⇒ that column drifted
+                     ├─ verdict:   DRIFT when drifted share > 0.5  (config)
+                     └─ exit 0 OK / 1 DRIFT / 2 ERROR   + JSON & HTML report
+```
+
+- **`--url`** pulls the live batch straight from the box (no SSH, no
+  credentials — the pull endpoint is plain HTTP like everything else here).
+  `--current` takes a folder of frames or a `.jsonl` log instead.
+- **Exit codes mirror `gate.py` on purpose**: `1` means *the data moved*,
+  `2` means *the monitor itself has a problem* (missing data, fewer than
+  `monitor.min_rows` samples). Conflating those would turn an operational
+  hiccup into a false "retrain now" alarm.
+- Columns that are **constant in the reference** (all frames are 256×192, so
+  `width`/`height`/`aspect_ratio`) are dropped with a note in the report:
+  there is no distribution to compare, and judging them would manufacture
+  both false alarms and false all-clears.
+- Reports land in `outputs/drift_report.json` + `.html` (Evidently's own
+  HTML with distributions plotted) — the evidence behind the exit code.
+
+### Verified both ways
+
+```powershell
+python -m src.monitoring.drift --current data/val
+# [DRIFT] OK — 0/6 features drifted (share 0.000 vs limit 0.5)   exit 0
+
+# 40 val frames darkened to 25% (night-time sensor):
+python -m src.monitoring.drift --current <darkened>
+# [DRIFT] DRIFT — 6/6 features drifted (share 1.000 vs limit 0.5)  exit 1
+#     DRIFT  brightness  p=4e-49     DRIFT  r_mean  p=4e-49   …
+```
+
+**Capture is opt-in by design** (`FEATURES_LOG`, baked into
+`Dockerfile.deploy`; `deploy/user-data.sh` bind-mounts the log so rows survive
+redeploys on new instances). On the current instance the log lives on the
+container's writable layer — it resets whenever a deploy replaces the
+container, which is honest for a demo: the monitor always reads a *recent
+window* of traffic, never an archive. `GET /monitor/features` reports
+`capture: "off"` when disabled, so "no drift" is never confused with
+"not watching".
+
+Deliberately **not** in the drift columns: `n_detections`/`mean_score` are
+logged for observability but are *prediction* drift (model-output), a
+different signal from input drift — Step 10's gate/retrain logic is where
+those belong.
+
 ## Repository policy (for GitHub Actions)
 
 CI clones a **fresh, empty VM** — it only ever sees committed files.
@@ -456,5 +532,5 @@ only in this machine's `~/.aws/credentials`.
 - [x] Step 7 — GitHub Actions CI/CD (4 parallel jobs: lint, test, docker, train+gate)
   + dataset generator promoted out of the notebook so a clean checkout can rebuild `data/`
 - [x] Step 8 — AWS deploy: EC2 t3.micro + GHCR auto-pull, zero secrets (Fargate skipped for cost)
-- [ ] Step 9 — Evidently drift monitor
+- [x] Step 9 — Evidently drift monitor: features from live traffic, K-S per column, 0/1/2 verdict + 19 tests
 - [ ] Step 10 — HITL gate + retrain trigger

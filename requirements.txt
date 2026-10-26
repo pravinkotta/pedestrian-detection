@@ -28,7 +28,10 @@ python-multipart>=0.0.6
 python-dotenv>=1.0
 
 # ---- Monitoring (Step 9) ----
-evidently>=0.4.20
+# Pinned to the 0.7 API (evidently.presets.DataDriftPreset, Report.run() ->
+# Run.json()); the 0.4 line this project started with has a different API
+# entirely, so the lower bound is a compatibility floor, not a suggestion.
+evidently>=0.7.23,<0.8
 
 # ---- Dev / CI ----
 pytest>=7.4

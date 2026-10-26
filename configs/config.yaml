@@ -99,3 +99,30 @@ gate:
   min_ap: 0.75                 # 11-point AP, all classes
   min_pedestrian_recall: 0.85  # SAFETY metric — pedestrian class specifically
   max_inference_ms: 800        # p95 latency budget on CI CPU (baseline ~734 ms)
+
+# ------------------------------------------------------------
+# DRIFT MONITOR (Step 9) - Evidently, serving inputs vs reference
+#   reference = the gold TRAIN split (what the model was fitted on)
+#   current   = frames the live API captured, or any folder/jsonl you point at
+# ------------------------------------------------------------
+monitor:
+  reference_split: train
+  # cache of per-image features; rebuild with --rebuild-reference
+  reference_features: data/processed/reference_features.parquet
+  # Input-data drift only. The API also logs n_detections / mean_score for
+  # observability, but those are prediction drift and deliberately not here.
+  features:
+    - brightness
+    - contrast
+    - sharpness
+    - r_mean
+    - g_mean
+    - b_mean
+    - width
+    - height
+    - aspect_ratio
+  stat_test_threshold: 0.05   # per column: K-S p-value below this = drifted
+  drift_share: 0.5            # dataset: DRIFT when more than half the features drift
+  min_rows: 10                # fewer current rows -> ERROR (no verdict on tiny samples)
+  report: outputs/drift_report.json
+  html: outputs/drift_report.html

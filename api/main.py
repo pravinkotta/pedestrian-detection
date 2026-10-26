@@ -6,9 +6,11 @@ Run:
 
 Endpoints
 ---------
-GET  /health   liveness probe — AWS ECS / ALB target groups poll this
-GET  /model    which model, which classes, which device (traceability)
-POST /detect   image in -> bounding boxes out
+GET  /health           liveness probe — the container's HEALTHCHECK polls this
+GET  /model            which model, which code (git_sha), which classes
+POST /detect           image in -> bounding boxes out
+GET  /monitor/features captured input features — the drift monitor's (Step 9)
+                       current batch, pulled by `python -m src.monitoring.drift --url`
 
 Design notes
 ------------
@@ -28,6 +30,7 @@ from __future__ import annotations
 
 import os
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 
@@ -37,6 +40,7 @@ from api.schemas import (
     HealthResponse,
     ImageInfo,
     ModelInfo,
+    MonitorFeaturesResponse,
 )
 from api.service import DEFAULT_THRESHOLD, ModelNotLoadedError, ModelService
 
@@ -66,8 +70,8 @@ app = FastAPI(
     version=VERSION,
     description=(
         "Serves a Faster R-CNN pedestrian / cyclist / vehicle detector.\n\n"
-        "Deployed on AWS ECS Fargate behind an ALB; `/health` is the "
-        "target-group health check."
+        "Runs on EC2 behind the deployer poller; `/health` is the container "
+        "HEALTHCHECK and the endpoint any future load balancer would use."
     ),
     lifespan=lifespan,
 )
@@ -78,6 +82,30 @@ def _service() -> ModelService:
     if svc is None:
         raise HTTPException(status_code=503, detail="service is starting up")
     return svc
+
+
+def _capture(image, detections: list, elapsed_ms: float) -> None:
+    """Append one feature row per served frame (Step 9's input to drift).
+
+    Opt-in via FEATURES_LOG; *nothing here may ever affect inference* — a
+    failed or disabled capture is swallowed. Only aggregates are stored
+    (9 image features + counts), never the image itself.
+    """
+    path = os.getenv("FEATURES_LOG")
+    if not path:
+        return
+    try:
+        from src.monitoring.features import append_row, extract_features
+
+        row = extract_features(image)
+        row["n_detections"] = len(detections)
+        row["mean_score"] = round(
+            max((d.get("score", 0.0) for d in detections), default=0.0), 4)
+        row["inference_ms"] = round(elapsed_ms, 2)
+        row["ts"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        append_row(path, row)
+    except Exception as exc:  # noqa: BLE001 — monitoring must not break serving
+        print(f"[api] feature capture failed (ignored): {exc}")
 
 
 @app.get("/", tags=["meta"], summary="Service metadata")
@@ -147,6 +175,8 @@ async def detect(
             status_code=500, detail=f"inference failed: {exc}"
         ) from exc
 
+    _capture(image, detections, elapsed_ms)
+
     return DetectResponse(
         detections=[Detection(**d) for d in detections],
         image=ImageInfo(width=image.width, height=image.height),
@@ -156,3 +186,27 @@ async def detect(
         model_version=svc.model_version,
         classes=svc.classes,
     )
+
+
+@app.get("/monitor/features", response_model=MonitorFeaturesResponse,
+         tags=["ops"],
+         summary="Captured input features (the drift monitor's current batch)")
+def monitor_features(
+    limit: int = Query(
+        1000, ge=1, le=20000,
+        description="Return at most this many of the most recent rows.",
+    ),
+) -> MonitorFeaturesResponse:
+    """What the drift job reads: `drift.py --url .../monitor/features`.
+
+    Returns `capture: "off"` when FEATURES_LOG is unset — a monitor must be
+    able to tell 'no drift' apart from 'not watching'.
+    """
+    from src.monitoring.features import read_rows
+
+    path = os.getenv("FEATURES_LOG")
+    if not path:
+        return MonitorFeaturesResponse(capture="off", count=0, rows=[])
+    rows = read_rows(path, limit=limit)
+    return MonitorFeaturesResponse(capture="on", source=path,
+                                   count=len(rows), rows=rows)
