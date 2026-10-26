@@ -55,6 +55,12 @@ class ModelInfo(BaseModel):
     model_version: str | None
     classes: list[str]
     architecture: str | None = None
+    git_sha: str = Field(
+        default="unknown",
+        description="Commit the serving image was built from (CI passes "
+                    "--build-arg GIT_SHA). 'unknown' outside a container "
+                    "build — and the field that proves a deploy landed.",
+    )
     backend: Literal["torch", "onnx", "none"] = Field(
         default="none",
         description="Which runtime is executing the model: PyTorch or "

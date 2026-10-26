@@ -98,7 +98,13 @@ def health() -> HealthResponse:
 @app.get("/model", response_model=ModelInfo, tags=["ops"],
          summary="Which model is serving, and with which classes")
 def model_info() -> ModelInfo:
-    return ModelInfo(**_service().info())
+    # git_sha comes from the image environment (CI sets GIT_SHA at build),
+    # so this endpoint answers "which CODE is live" — the observable proof
+    # that a push-to-main deploy actually reached the box.
+    import os
+
+    return ModelInfo(**_service().info(),
+                     git_sha=os.environ.get("GIT_SHA", "unknown"))
 
 
 @app.post("/detect", response_model=DetectResponse, tags=["inference"],

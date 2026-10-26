@@ -24,6 +24,11 @@
 ARG BASE_IMAGE=pedestrian-api:slim
 FROM ${BASE_IMAGE}
 
+# Which code is running, visible at /model. CI passes the commit; outside a
+# container build it stays "unknown" and the API still answers.
+ARG GIT_SHA=unknown
+ENV GIT_SHA=${GIT_SHA}
+
 # ONNX_MODEL_PATH already points at /app/models/model.onnx (set in the
 # runtime stage) — until now that path simply did not exist, which is why
 # /health on a base image reports model_loaded=false. The file makes it true.

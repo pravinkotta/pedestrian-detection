@@ -80,6 +80,19 @@ def test_model_endpoint_reports_classes_and_device(client):
     assert body["architecture"]
 
 
+def test_model_endpoint_reports_which_code_is_serving(client):
+    """/model must name the build, or "did my deploy land?" is unanswerable.
+
+    CI stamps GIT_SHA into the image; outside a container build the field
+    stays at its documented default instead of breaking the response.
+    """
+    import os
+
+    body = client.get("/model").json()
+    assert body["git_sha"] == os.environ.get("GIT_SHA", "unknown")
+    assert body["git_sha"]  # never empty
+
+
 def test_root_lists_docs(client):
     body = client.get("/").json()
     assert body["docs"] == "/docs"

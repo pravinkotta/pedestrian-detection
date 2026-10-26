@@ -272,6 +272,7 @@ jobs:
           ls -la models/model.onnx
           docker build -f Dockerfile.deploy \
             --build-arg BASE_IMAGE=pedestrian-api:slim \
+            --build-arg GIT_SHA="${GITHUB_SHA}" \
             -t pedestrian-api:deploy .
 
       - name: Push to GHCR
