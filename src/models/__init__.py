@@ -4,10 +4,10 @@ from .build_model import build_model, describe, resolve_device
 from .dataset import CocoDetectionDataset, collate, make_loader
 
 __all__ = [
-    "build_model",
-    "describe",
-    "resolve_device",
     "CocoDetectionDataset",
+    "build_model",
     "collate",
+    "describe",
     "make_loader",
+    "resolve_device",
 ]

@@ -1,0 +1,35 @@
+# =============================================================================
+#  Runtime dependencies for the SERVING image only.
+#
+#  requirements.txt (dev / CI) pulls in the whole MLOps toolchain — the MLflow
+#  server, Evidently's drift stack, pytest, ruff. All of that drags in
+#  scikit-learn, nltk, matplotlib, plotly, statsmodels, Flask, databricks-sdk
+#  and turns a 1.5 GB image into 2.9 GB, for code the API never calls.
+#
+#  The drift monitor (Step 9) runs as its own job and installs requirements.txt;
+#  this file is what the container actually executes.
+#
+#  torch/torchvision are intentionally absent — the Dockerfile installs them
+#  pinned to the +cpu wheels, which PyPI cannot satisfy.
+# =============================================================================
+
+# ---- HTTP serving ----
+fastapi>=0.109
+uvicorn[standard]>=0.27
+python-multipart>=0.0.6
+pydantic>=2.0
+
+# ---- inference ----
+numpy>=1.26
+Pillow>=10.0
+pyyaml>=6.0
+
+# ONNX Runtime: the serving path used by the slim image (SERVE_BACKEND=onnx).
+# ~15 MB of runtime vs ~190 MB of CPU torch wheels — same graph, same numbers
+# (python -m src.models.export_onnx --verify proves it to ~1e-6).
+onnx>=1.16
+onnxruntime>=1.17
+
+# ---- MLflow registry pulls (MODEL_URI=models:/PedestrianDetector@champion)
+#      skinny = client-side tracking + model flavors, without the server stack.
+mlflow-skinny>=2.10

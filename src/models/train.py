@@ -31,6 +31,7 @@ from pathlib import Path
 import numpy as np
 import torch
 import yaml
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = PROJECT_ROOT / "configs" / "config.yaml"
 
@@ -99,7 +100,7 @@ def train(cfg: dict, epochs: int | None = None, smoke: bool = False,
     )
     num_classes = len(classes) + 1      # + background
 
-    model = build_model(num_classes, pretrained=True, device=device)
+    model = build_model(num_classes, pretrained=True, device=device, cfg=cfg)
     info = describe(model)
     log(f"device={info['device']} | classes={classes} "
         f"({num_classes} incl. background) | params={info['params_millions']}M")

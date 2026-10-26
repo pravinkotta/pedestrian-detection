@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -105,7 +104,6 @@ def test_metrics_flat_bundle_contains_safety_metric():
     m = compute_metrics(fake, ["pedestrian", "cyclist", "vehicle"])
 
     # every metric must be a plain number (MLflow rejects dicts)
-    from src.experiments.tracking import log_metrics
 
     scalars = {}
     for k, v in m.items():

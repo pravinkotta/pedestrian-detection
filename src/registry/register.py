@@ -65,7 +65,7 @@ def main() -> int:
     # ---- 1. the run must exist and actually have a model ---------------
     try:
         run = client.get_run(args.run)
-    except Exception as exc:
+    except Exception as exc:                   # noqa: BLE001
         print(f"[REGISTER] ERROR — run '{args.run}' not found: {exc}")
         return 2
 
@@ -83,7 +83,7 @@ def main() -> int:
     from mlflow.models import get_model_info
     try:
         info = get_model_info(uri)
-    except Exception:
+    except Exception:                          # noqa: BLE001
         info = None
 
     if info is None:

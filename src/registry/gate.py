@@ -62,9 +62,9 @@ def main() -> int:
         import torch
         torch.set_num_threads(torch.get_num_threads() or 4)
 
-        from src.models.evaluate import check_gate, evaluate
         from src.models.checkpoint import load_checkpoint
         from src.models.dataset import make_loader
+        from src.models.evaluate import check_gate, evaluate
 
         p = cfg["paths"]
         ann = PROJECT_ROOT / p["coco_dir"] / f"{args.split}.json"

@@ -27,7 +27,7 @@ def describe_uri(uri: str) -> str:
             rest = uri[len("runs:/"):]
             run_id = rest.split("/", 1)[0]
             return f"run:{run_id[:7]}"
-    except Exception:                                # noqa: BLE001
+    except Exception:                                # noqa: BLE001, S110
         pass
     return uri.rstrip("/").rsplit("/", 1)[-1]
 

@@ -27,7 +27,7 @@ def _run_cli(*args: str) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, "-m", *args],
         cwd=ROOT, capture_output=True, text=True, timeout=600,
-        encoding="utf-8", errors="replace",
+        encoding="utf-8", errors="replace", check=False,
     )
 
 
@@ -172,7 +172,7 @@ def _find_failed_run_with_model():
         run_id = run.info.run_id
         try:
             get_model_info(f"runs:/{run_id}/model")
-        except Exception:
+        except Exception:                      # noqa: BLE001, S112
             continue
         return client, run_id, exp
     return client, None, exp
@@ -180,7 +180,7 @@ def _find_failed_run_with_model():
 
 def test_register_refuses_run_that_failed_gate():
     """The core safety rule: a failing model cannot reach the registry."""
-    client, run_id, _ = _find_failed_run_with_model()
+    _client, run_id, _ = _find_failed_run_with_model()
     if not run_id:
         pytest.skip("no gate-failed run WITH a model recorded yet")
 
@@ -214,7 +214,7 @@ def _model_exists(client) -> bool:
     try:
         client.get_registered_model("PedestrianDetector")
         return True
-    except Exception:
+    except Exception:                          # noqa: BLE001
         return False
 
 

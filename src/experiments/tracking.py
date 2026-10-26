@@ -44,7 +44,9 @@ def git_info() -> dict:
                 text=True, timeout=10, check=False,
             )
             return out.stdout.strip() if out.returncode == 0 else None
-        except Exception:
+        except Exception:                      # noqa: BLE001
+            # git provenance is a nice-to-have: a tarball or CI checkout
+            # without .git must not break tracking
             return None
 
     sha = _run("rev-parse", "HEAD")

@@ -32,8 +32,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 
 from api.schemas import (
-    DetectResponse,
     Detection,
+    DetectResponse,
     HealthResponse,
     ImageInfo,
     ModelInfo,
@@ -104,7 +104,8 @@ def model_info() -> ModelInfo:
 @app.post("/detect", response_model=DetectResponse, tags=["inference"],
           summary="Detect pedestrians, cyclists and vehicles in an image")
 async def detect(
-    file: UploadFile = File(..., description="PNG or JPEG image"),
+    file: UploadFile = File(  # noqa: B008 - FastAPI declares dependencies this way
+        ..., description="PNG or JPEG image"),
     score_thresh: float = Query(
         DEFAULT_THRESHOLD, ge=0.0, le=1.0,
         description="Minimum confidence. Raise to reduce false positives; "
@@ -125,7 +126,7 @@ async def detect(
 
     try:
         image = ModelService.read_image(data)
-    except Exception as exc:                         # noqa: BLE001
+    except Exception as exc:
         raise HTTPException(
             status_code=400,
             detail=f"could not decode image: {type(exc).__name__}",

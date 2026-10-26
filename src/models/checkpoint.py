@@ -52,7 +52,11 @@ def load_checkpoint(path: Path, device: str = "cpu", strict: bool = True):
         raise KeyError(f"{path} is not a valid checkpoint — missing {missing}")
 
     dev = resolve_device(device)
-    model = build_model(ckpt["num_classes"], pretrained=False, device=dev)
+    # Restore the training-time geometry/head settings from the checkpoint's
+    # stored config so serving sees exactly what training saw. This is why
+    # save_checkpoint bundles config alongside the weights.
+    model = build_model(ckpt["num_classes"], pretrained=False, device=dev,
+                        cfg=ckpt.get("config"))
     model.load_state_dict(ckpt["model_state"], strict=strict)
     model.eval()
 

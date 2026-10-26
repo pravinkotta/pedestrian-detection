@@ -100,6 +100,18 @@ python -m src.experiments.run_experiment --no-track  # train without MLflow
 mlflow ui --backend-store-uri sqlite:///mlflow.db     # then open http://127.0.0.1:5000
 ```
 
+> **The UI is a separate process — nothing in the pipeline starts it.**
+> Training writes straight to `mlflow.db`, so runs keep tracking fine while
+> `http://127.0.0.1:5000` refuses connections. Start the viewer yourself
+> (from the repo root, so artifacts resolve):
+>
+> ```powershell
+> mlflow ui --backend-store-uri sqlite:///mlflow.db
+> # or, with explicit artifact storage:
+> python -m mlflow server --backend-store-uri sqlite:///mlflow.db `
+>                         --artifacts-destination mlruns --port 5000
+> ```
+
 | Logged | Contents |
 |--------|----------|
 | **params** (25) | every `train.*`, `model.*`, `gate.*` value + label map |
@@ -180,7 +192,9 @@ r.json()   # {detections: [...], image: {width, height}, inference_ms, model_sou
 |---|---|---|
 | `MODEL_URI` | `models:/PedestrianDetector@champion` | production (serves whatever the registry says) |
 | `MODEL_PATH` | `models/model.pt` | local development |
-| `INFERENCE_DEVICE` | `cpu` (default) / `cuda` | — |
+| `ONNX_MODEL_PATH` | `models/model.onnx` | the graph behind `SERVE_BACKEND=onnx` |
+| `SERVE_BACKEND` | `auto` (default) / `torch` / `onnx` | which runtime executes the model |
+| `INFERENCE_DEVICE` | `cpu` (default) / `cuda` | torch backend only |
 
 `/health` returns **200 even if the model failed to load** (`model_loaded: false`),
 so the ALB can distinguish *starting up* from *broken* while `/model` still
@@ -188,13 +202,94 @@ reports the actual error. `score_thresh` is a query parameter because the
 operating point is a deployment decision — the notebook's safety point is 0.71 —
 and it must be tunable **without retraining**.
 
-Measured on this machine: **~648 ms inference**, 0.7 s round-trip, 256×192 PNG.
+Measured on this machine after training (`baseline-v1`), 256×192 PNG:
+
+| runtime | median inference | detections @ 0.30 |
+|---|---|---|
+| PyTorch (`SERVE_BACKEND=torch`) | ~224 ms | 5 — identical |
+| ONNX Runtime (`SERVE_BACKEND=onnx`) | ~208 ms | 5 — identical |
+
+Same boxes, same scores (max delta **0**). The two backends are A/B-testable
+precisely because preprocessing is shared — see `tests/test_onnx.py`.
+
+Earlier in the project this measured ~648 ms. Two things changed: the config's
+`train.image_min_size: 480` / `image_max_size: 800` were finally applied to
+`model.transform` (they had been declared but never wired up), and the model
+was actually trained instead of shipping the untrained placeholder.
+
+## Stage 6 — Docker + ONNX serving
+
+One Dockerfile, two images, selected at **build** time so an image can never
+end up calling a runtime it does not have:
+
+| image | build command | size | backends available |
+|---|---|---|---|
+| `pedestrian-api:local` | `docker build -t pedestrian-api:local .` | **1.73 GB** | `torch` and `onnx` |
+| `pedestrian-api:slim` | `docker build --build-arg INSTALL_TORCH=0 -t pedestrian-api:slim .` | **702 MB** | `onnx` only |
+
+```powershell
+docker compose up --build                # SERVE_BACKEND=onnx by default
+curl http://localhost:8000/health        # {"status":"ok","model_loaded":true}
+curl http://localhost:8000/model         # "backend": "onnx"
+```
+
+Measured **inside** containers (256×192 PNG, 5 warm runs, both images serving
+the same weights):
+
+| image | backend | min | median | detections |
+|---|---|---|---|---|
+| `pedestrian-api:slim` | `onnx` (no torch in the image) | **142 ms** | 152 ms | 5 |
+| `pedestrian-api:local` | `torch` | 189 ms | 199 ms | 5 |
+
+Labels identical, **score delta 0, bbox delta 0 px**, `docker inspect` →
+`health: healthy`, and `import torch` **fails** in the slim image — it has none.
+
+### Why the container can drop PyTorch
+
+```powershell
+python -m src.models.export_onnx --verify     # torch vs ONNX Runtime, same frame
+```
+
+The export writes a wrapper that satisfies torchvision's two traps and then
+proves the result: **80 detections on both sides, score delta 5.6e-06,
+box delta 0.0002 px, labels identical** (`tests/test_onnx.py` asserts this
+on every CI run). Once that holds, PyTorch is only needed to *produce* the
+graph, not to *run* it — and production should ship the runtime it verified,
+not the training framework.
+
+Two details that make the graph safe to run:
+
+* **proposal count pinned to 200** with tensor-only arithmetic — the
+  TorchScript tracer freezes data-dependent Python ints (`boxes_per_image`,
+  `box_sum`) at export time, so a graph traced on one frame otherwise breaks
+  on the next.
+* **`n_dets` left dynamic** in `dynamic_axes`, because padding detections to
+  a fixed count would bake another such int.
+
+### Where the 702 MB goes (site-packages: 374 MB)
+
+| package | MB | why it is there |
+|---|---|---|
+| `sympy` | 57 | required by `onnxruntime` |
+| `onnxruntime` | 52 | the serving runtime |
+| `numpy` (+libs) | 68 | arrays in and out of the graph |
+| `mlflow-skinny` + `databricks-sdk` | ~60 | `MODEL_URI=models:/PedestrianDetector@champion` pulls |
+| `onnx` | 30 | graph export / `onnx.checker` (`src/models/export_onnx.py`) |
+| rest of the ML stack | ~107 | fastapi, uvicorn, pydantic, pillow, pyyaml |
+| Python 3.10 base + stdlib | ~330 | OS layer, `libgomp1`, `curl` |
+
+Everything else in `requirements.txt` (Evidently, pandas, pyarrow, pytest,
+ruff, the MLflow server) is deliberately excluded — see the header of
+`requirements-runtime.txt`.
+
+Build context is **0.1 MB**, not 147 MB: `.dockerignore` excludes `data/`,
+`mlruns/`, `models/` and weights, which are mounted or fetched at runtime.
 
 ## Repository policy (for GitHub Actions)
 
 CI clones a **fresh, empty VM** — it only ever sees committed files.
 
-**Committed:** `src/`, `configs/`, `tests/`, `requirements.txt`, `Dockerfile`, `.github/`.
+**Committed:** `src/`, `configs/`, `tests/`, `api/`, `requirements*.txt`, `Dockerfile`, `docker-compose.yml`, `.github/`.
 
 **Never committed** (see `.gitignore`): `data/`, `mlruns/`, `models/*.pt`, `.venv/`, `.env`.
 AWS credentials live in **GitHub Secrets**, not in the repo.
@@ -210,10 +305,7 @@ AWS credentials live in **GitHub Secrets**, not in the repo.
 - [x] Step 3 — MLflow experiment tracking (SQLite backend) + 8 tracking tests
 - [x] Step 4 — evaluation gate (exit 0/1/2) + MLflow registry with aliases + 13 tests
 - [x] Step 5 — FastAPI serving (health / model / detect) + 12 API tests
-- [ ] Step 6 — Docker
-- [ ] Step 4 — MLflow model registry + evaluation gate
-- [ ] Step 5 — FastAPI serving
-- [ ] Step 6 — Docker
+- [x] Step 6 — Docker + ONNX serving (two image variants, parity tests) + 9 ONNX tests
 - [ ] Step 7 — GitHub Actions CI/CD
 - [ ] Step 8 — AWS ECS Fargate
 - [ ] Step 9 — Evidently drift monitor

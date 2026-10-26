@@ -55,6 +55,11 @@ class ModelInfo(BaseModel):
     model_version: str | None
     classes: list[str]
     architecture: str | None = None
+    backend: Literal["torch", "onnx", "none"] = Field(
+        default="none",
+        description="Which runtime is executing the model: PyTorch or "
+                    "ONNX Runtime. Both serve the same graph.",
+    )
     device: str
     default_threshold: float
 

@@ -1,0 +1,49 @@
+# Build context must stay tiny and contain NO data, weights or state.
+# Without this file a `docker build .` ships data/, mlruns/, models/, .venv/
+# — potentially GBs, and it would leak the dataset into a shared image.
+
+# --- VCS / tooling ---
+.git
+.gitignore
+.gitattributes
+.idea
+.vscode
+
+# --- Python envs and caches ---
+.venv
+venv
+env
+**/__pycache__
+**/*.py[cod]
+.pytest_cache
+.ruff_cache
+.coverage
+htmlcov
+*.egg-info
+
+# --- Data, weights and MLflow state: fetched at runtime, never baked in ---
+data
+mlruns
+mlartifacts
+mlflow.db
+models
+outputs
+runs
+*.pt
+*.pth
+*.onnx
+*.zip
+*.mat
+*.db
+
+# --- Secrets ---
+.env
+*.pem
+
+# --- Local logs ---
+*.log
+
+# --- Docs / notebooks not needed in the image ---
+*.md
+figs
+notebooks

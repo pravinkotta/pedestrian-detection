@@ -22,8 +22,6 @@ import json
 import sys
 from pathlib import Path
 
-import yaml
-
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = PROJECT_ROOT / "configs" / "config.yaml"
 
@@ -32,7 +30,10 @@ def main() -> int:
     import mlflow
 
     from src.experiments.tracking import (
-        log_artifacts, log_metrics, log_params, start_run,
+        log_artifacts,
+        log_metrics,
+        log_params,
+        start_run,
     )
     from src.models.train import load_config, train
 
@@ -87,7 +88,7 @@ def main() -> int:
         # loss curve as a per-epoch metric series is more useful than an artifact
         for rec in result["history"]:
             mlflow.log_metrics(
-                {f"loss/total": rec["total"],
+                {"loss/total": rec["total"],
                  "loss/classifier": rec["loss_classifier"],
                  "loss/box_reg": rec["loss_box_reg"],
                  "loss/rpn_objectness": rec["loss_objectness"],

@@ -1,0 +1,79 @@
+# =============================================================================
+#  Local containerised run
+#
+#    docker compose up --build
+#    curl http://localhost:8000/health
+#
+#  Two ways to feed the container its weights — pick with `profiles`:
+#
+#    default            serves a local checkpoint   (./models/model.pt)
+#    --profile registry serves from the MLflow registry at runtime
+#
+#    docker compose --profile registry up --build
+# =============================================================================
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: pedestrian-api:local
+    container_name: pedestrian-api
+    ports:
+      - "8000:8000"
+    environment:
+      # local weights (models/ is gitignored and dockerignored -> mounted)
+      MODEL_PATH: /app/models/model.pt
+      ONNX_MODEL_PATH: /app/models/model.onnx
+      # onnx by default: the slim image (--build-arg INSTALL_TORCH=0) has no
+      # torch at all. A/B it with:  SERVE_BACKEND=torch docker compose up
+      # Both return identical detections (tests/test_onnx.py).
+      SERVE_BACKEND: ${SERVE_BACKEND:-onnx}
+      INFERENCE_DEVICE: cpu
+    volumes:
+      - ./models:/app/models:ro
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import json,sys,urllib.request as u;
+          d=json.load(u.urlopen('http://127.0.0.1:8000/health',timeout=6));
+          sys.exit(0 if d.get('model_loaded') else 1)
+      interval: 30s
+      timeout: 8s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+    # memory ceiling — a runaway inference process should not eat the host
+    mem_limit: 2g
+
+  # ---------------------------------------------------------------------------
+  # Registry-backed serving: weights are pulled from MLflow at startup.
+  # The SQLite DB + artifact dir are mounted read-only so the container reads
+  # the same registry the training machine wrote.
+  # In AWS (Step 8) this becomes a hosted MLflow server via MLFLOW_TRACKING_URI.
+  # ---------------------------------------------------------------------------
+  api-registry:
+    profiles: ["registry"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: pedestrian-api:local
+    container_name: pedestrian-api-registry
+    ports:
+      - "8001:8000"
+    environment:
+      # the registry alias, not a pinned run id: Step 8 must serve whatever
+      # Step 4 last promoted
+      MODEL_URI: ${MODEL_URI:-models:/PedestrianDetector@champion}
+      MLFLOW_TRACKING_URI: sqlite:////app/mlflow.db
+      INFERENCE_DEVICE: cpu
+      # the MLflow pytorch flavor has no ONNX artifact -> this profile needs
+      # the torch-enabled image (the default build, INSTALL_TORCH=1)
+      SERVE_BACKEND: torch
+    volumes:
+      - ./mlflow.db:/app/mlflow.db:ro
+      - ./mlruns:/app/mlruns:ro
+    restart: unless-stopped
+    mem_limit: 2g

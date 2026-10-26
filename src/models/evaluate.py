@@ -167,13 +167,13 @@ def compute_metrics(result: dict, classes: list[str],
     negatives = result["n_negatives"]
     n_images = result["n_images"]
 
-    _, prec, rec, tp, fp = pr_points(dets, total_gt)
+    _, prec, rec, _, _ = pr_points(dets, total_gt)
     ap_all = ap_11point(rec, prec)
 
     # pedestrian class specifically — the safety-critical one
     ped_id = classes.index("pedestrian") + 1 if "pedestrian" in classes else 1
     ped_pos = result["gt_per_class"].get(ped_id, 0)
-    rows_ped, prec_ped, rec_ped, _, _ = pr_points(
+    _, prec_ped, rec_ped, _, _ = pr_points(
         [d for d in dets if d["label"] == ped_id], ped_pos
     )
     ap_ped = ap_11point(rec_ped, prec_ped)

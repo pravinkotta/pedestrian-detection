@@ -1,0 +1,12 @@
+# Ruff config — Step 7 (CI) runs `ruff check .` with exactly these settings.
+#
+# WHY target-version is pinned: ruff 0.17's default target is py311, so its
+# UP017 fix rewrites `datetime.now(timezone.utc)` -> `datetime.now(UTC)`.
+# `datetime.UTC` only exists on Python >= 3.11, and this project runs on
+# 3.10.11 — the "fix" made src/registry/gate.py unimportable and broke two
+# tests. Pinning py310 makes ruff aware of the interpreter we actually ship.
+target-version = "py310"
+
+# Leave `select` unset on purpose: the default rule set is the broad one
+# (F, E, W, I, B, UP, SIM, RUF, S, BLE, PL, ...), and an explicit list here
+# would silently narrow it the next time ruff adds rules.
