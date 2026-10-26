@@ -1,7 +1,9 @@
 # Pedestrian Detection — MLOps Pipeline
 
 Faster R-CNN (MobileNetV3-Large + FPN) detecting **pedestrians / cyclists / vehicles**,
-promoted from notebook research code to a production ML pipeline deployed on **AWS ECS Fargate**.
+promoted from notebook research code to a production ML pipeline deployed on **AWS EC2**
+(the mentor diagram's ECS/Fargate target — see [Stage 8](#stage-8--deploy-on-aws-ec2--ghcr-auto-pull)
+for why EC2 won on cost).
 
 **Headline metric:** *Recall @ FPR ≤ 1%* — a safety metric, not mAP. A missed pedestrian
 costs far more than a false alarm, so recall is optimised subject to a low false-positive ceiling.
@@ -11,7 +13,7 @@ costs far more than a false alarm, so recall is optimised subject to a low false
 ```
 Feature Engineering + Gold Layer  ->  MLflow Experiment Tracking  ->  MLflow Model Registry
                                                                         |
-FastAPI Endpoint  ->  Docker Container  ->  GitHub Actions CI/CD  ->  AWS ECS (Fargate)
+FastAPI Endpoint  ->  Docker Container  ->  GitHub Actions CI/CD  ->  AWS EC2 (Fargate skipped)
                                                                         |
 Evidently Drift Monitor  ->  HITL Gate (high-risk)  ->  Retrain Trigger
 ```
@@ -180,7 +182,7 @@ uvicorn api.main:app --host 0.0.0.0 --port 8000
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /health` | liveness probe — the **ECS / ALB target-group check** |
+| `GET /health` | liveness probe — the container's `HEALTHCHECK`, and the check any future ALB would use |
 | `GET /model` | which model, classes, device (traceability) |
 | `POST /detect?score_thresh=0.3` | image in → `[{bbox, label, score}]` out |
 
@@ -340,14 +342,103 @@ makes the workflow safe to run on forked PRs.
 The gate report is uploaded as a build artifact on every run, so you can open
 `outputs/gate_report.json` from the Actions page without re-running anything.
 
+## Stage 8 — Deploy on AWS (EC2 + GHCR auto-pull)
+
+The mentor's diagram says *AWS ECS / Kubernetes*. We shipped on **EC2**,
+because at this scale the arithmetic is not close:
+
+| option | always-on cost (ap-southeast-2) | what you operate |
+|---|---|---|
+| Fargate 0.5 vCPU/1 GB **+ ALB** | ~$15 + ~$18 ≈ **$33/mo** | nothing — but you pay for the load balancer whether or not you use it |
+| **EC2 t3.micro** (this project) | ~**$9.6/mo** (free for 750 h/mo while the account is in its first 12 months) | one box: OS updates, single point of failure |
+
+You can move to Fargate later without changing the image — that is the point
+of shipping a container.
+
+### Why GHCR instead of ECR
+
+The account's IAM user (`admin`) turned out to be deliberately restricted, and
+the restrictions *are* the architecture:
+
+| permission | result | consequence |
+|---|---|---|
+| `iam:CreateRole` | ❌ denied | no instance profile → the box **cannot authenticate to ECR or SSM** |
+| `s3:*` | ❌ denied | no S3 to stash the model in |
+| `ec2:CreateKeyPair` | ❌ denied | no new SSH keys (only your existing `AI-LLM` key) |
+| `ec2:RunInstances`, SGs, `ecr:CreateRepository` | ✅ | we can launch and open ports |
+
+So distribution runs through GitHub instead: the repo is public → the GHCR
+package is public → **the instance pulls anonymously with zero credentials**,
+and CI pushes with its built-in `GITHUB_TOKEN`. **The entire pipeline needs no
+secret at all** — verified by fetching the manifest with a credential-less
+token (HTTP 200) before the instance was ever launched.
+
+### The deploy loop
+
+```
+push to main ──▶ CI (5 jobs, ~9 min) ──▶ ghcr.io/…/pedestrian-detection:latest
+                                              │
+        EC2 box, every 5 min: docker pull ─────┘
+        new image id? docker rm -f + docker run   (≤5 min later: live)
+```
+
+- [`deploy/user-data.sh`](deploy/user-data.sh) — the whole instance: installs
+  docker, runs the poller as a systemd unit (`journalctl -u pedestrian-deployer -f`
+  to watch it). Because cloud-init runs it once at boot, the loop lives in
+  systemd, not in the user-data process itself.
+- [`Dockerfile.deploy`](Dockerfile.deploy) — slim base **plus** the weights.
+  A second Dockerfile gets its own `Dockerfile.deploy.dockerignore`, so *this*
+  build may see `models/model.onnx` while every other context stays
+  weight-free. The instance has no MLflow registry and no S3 — a deployed API
+  must not depend on a training-time service to boot.
+- The model baked in is the one **this exact run trained and gate-checked**;
+  `train-and-gate` uploads it as an artifact and `deploy` consumes it.
+
+### Proof it works
+
+`/model` reports `git_sha`, stamped at image build (`--build-arg GIT_SHA`) —
+so "did my deploy land?" is one `curl`, not a guess:
+
+```powershell
+curl http://3.25.172.15:8000/health
+# {"status":"ok","model_loaded":true}
+
+curl http://3.25.172.15:8000/model
+# … "git_sha":"b5223517c65a9c3b5352126c8c897ec30dcf586f", "backend":"onnx"
+
+curl -F "file=@data/val/val_0000.png;type=image/png" http://3.25.172.15:8000/detect
+# 5 detections, inference_ms ≈ 266 (CPU, t3.micro)
+```
+
+The first live deploy was observed end-to-end: commit pushed → CI published →
+the box replaced its own container 3½ minutes later, `git_sha` flipping from
+`unknown` to the pushed commit with no human touching anything.
+
+**Day-2 operations**
+
+```powershell
+aws ec2 stop-instances  --instance-ids i-084fbb0fb3cb86547   # stop paying (~$9.6/mo)
+aws ec2 start-instances --instance-ids i-084fbb0fb3cb86547   # boots, redeploys itself
+```
+
+Caveats, stated plainly: the public IP (`3.25.172.15`) is **ephemeral** —
+stopping and starting moves it (no `ec2:AllocateAddress` permission for an
+Elastic IP), so update any bookmark. Port 8000 is open to the world and the
+API has **no auth** — fine for a demo, put it behind a reverse proxy or an ALB
+with auth before serving real traffic. Debugging shell access needs your
+`AI-LLM` key pair (port 22 is open); this agent never holds it.
+
 ## Repository policy (for GitHub Actions)
 
 CI clones a **fresh, empty VM** — it only ever sees committed files.
 
-**Committed:** `src/`, `configs/`, `tests/`, `api/`, `requirements*.txt`, `Dockerfile`, `docker-compose.yml`, `.github/`.
+**Committed:** `src/`, `configs/`, `tests/`, `api/`, `requirements*.txt`, `Dockerfile`,
+`Dockerfile.deploy` + `.dockerignore`, `docker-compose.yml`, `deploy/`, `.github/`.
 
 **Never committed** (see `.gitignore`): `data/`, `mlruns/`, `models/*.pt`, `.venv/`, `.env`.
-AWS credentials live in **GitHub Secrets**, not in the repo.
+There are **no AWS credentials in GitHub at all** — CI deploys with its
+automatic `GITHUB_TOKEN`, and the AWS CLI keys used to create the instance live
+only in this machine's `~/.aws/credentials`.
 
 > The synthetic dataset is regenerable with **`python -m src.data.generate`**
 > (the notebook's `make_scene()` generator, promoted into `src/data/`), so CI
@@ -364,6 +455,6 @@ AWS credentials live in **GitHub Secrets**, not in the repo.
 - [x] Step 6 — Docker + ONNX serving (two image variants, parity tests) + 9 ONNX tests
 - [x] Step 7 — GitHub Actions CI/CD (4 parallel jobs: lint, test, docker, train+gate)
   + dataset generator promoted out of the notebook so a clean checkout can rebuild `data/`
-- [ ] Step 8 — AWS ECS Fargate
+- [x] Step 8 — AWS deploy: EC2 t3.micro + GHCR auto-pull, zero secrets (Fargate skipped for cost)
 - [ ] Step 9 — Evidently drift monitor
 - [ ] Step 10 — HITL gate + retrain trigger
