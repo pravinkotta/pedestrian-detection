@@ -8,6 +8,19 @@ for why EC2 won on cost).
 **Headline metric:** *Recall @ FPR ≤ 1%* — a safety metric, not mAP. A missed pedestrian
 costs far more than a false alarm, so recall is optimised subject to a low false-positive ceiling.
 
+> ⏸ **Status (2026-10-26): the EC2 instance is stopped — there is no live
+> endpoint right now.** That was a deliberate choice to stop the ~$9.6/mo
+> charge. Stated honestly, what it does and doesn't affect:
+> - `LIVE_API_URL` still points at an address that no longer exists, so the
+>   daily drift run reports **ERROR (exit 2)** against it — never a fake OK,
+>   never a DRIFT, so a dead URL **never triggers a retrain**.
+> - CI, the 101 tests, the evaluation gate, the registry and both workflows
+>   are completely unaffected — none of them touch the box.
+> - To bring it back: AWS console → EC2 → *Instance state → Start*, then
+>   follow [Day-2 operations](#day-2-operations): resolve the new IP, update
+>   `LIVE_API_URL`, re-prime the drift capture to ≥10 rows. The API then
+>   self-redeploys within ~5 minutes — nobody starts a container by hand.
+
 ## Pipeline
 
 ```
@@ -400,11 +413,14 @@ push to main ──▶ CI (5 jobs, ~9 min) ──▶ ghcr.io/…/pedestrian-dete
 so "did my deploy land?" is one `curl`, not a guess:
 
 ```powershell
-# The public IP is EPHEMERAL (no ec2:AllocateAddress permission) and moves on
-# every stop/start - look it up first, then keep LIVE_API_URL in sync:
-aws ec2 describe-instances --instance-ids i-084fbb0fb3cb86547 `
+# The public IP is EPHEMERAL (no ec2:AllocateAddress permission): every
+# stop/start hands out a fresh one, so NEVER hardcode it - resolve it first.
+# (STATUS 2026-10-26: the instance is STOPPED, so this prints nothing until
+#  it is started from the AWS console - see "Day-2 operations" below.)
+$IP = aws ec2 describe-instances --instance-ids i-084fbb0fb3cb86547 `
   --query "Reservations[0].Instances[0].PublicIpAddress" --output text
-$API = "http://3.26.48.54:8000"    # current as of 2026-10-26
+$API = "http://${IP}:8000"
+gh variable set LIVE_API_URL --body $API    # keeps the drift cron pointed here
 
 curl ${API}/health
 # {"status":"ok","model_loaded":true}
@@ -420,7 +436,7 @@ The first live deploy was observed end-to-end: commit pushed → CI published �
 the box replaced its own container 3½ minutes later, `git_sha` flipping from
 `unknown` to the pushed commit with no human touching anything.
 
-**Day-2 operations**
+### Day-2 operations
 
 ```powershell
 # ⚠ VERIFIED 2026-10-26: the `admin` IAM user can run NEITHER of these —
@@ -469,14 +485,17 @@ ERROR against a dead URL.
    container is replaced, and the monitor needs ≥10 rows:
    `1..24 | %{ curl -F "file=@data/val/val_0000.png;type=image/png" http://<new-ip>:8000/detect }`
 
-Caveats, stated plainly: the public IP (`3.26.48.54`, was `3.25.172.15` before
-the 2026-10-26 stop/start — it moves every time) is **ephemeral** —
-stopping and starting moves it (no `ec2:AllocateAddress` permission for an
-Elastic IP), so update any bookmark **and the `LIVE_API_URL` repo variable**
-(`gh variable set LIVE_API_URL --body http://<new-ip>:8000`). Port 8000 is open to the world and the
-API has **no auth** — fine for a demo, put it behind a reverse proxy or an ALB
-with auth before serving real traffic. Debugging shell access needs your
-`AI-LLM` key pair (port 22 is open); this agent never holds it.
+Caveats, stated plainly: the public IP is **ephemeral** — there is no Elastic
+IP (no `ec2:AllocateAddress` permission), so every stop/start hands out a fresh
+address: `3.25.172.15` → `3.26.48.54` → and while the instance is **stopped,
+none at all**. Resolve it with the `aws ec2 describe-instances` call above
+rather than bookmarking it, and keep the `LIVE_API_URL` repo variable in sync
+(`gh variable set LIVE_API_URL --body http://<new-ip>:8000`) — otherwise the
+drift cron honestly reports ERROR against a dead address, never a fake OK.
+Port 8000 is open to the world and the API has **no auth** — fine for a demo,
+put it behind a reverse proxy or an ALB with auth before serving real traffic.
+Debugging shell access needs your `AI-LLM` key pair (port 22 is open); this
+agent never holds it.
 
 ## Stage 9 — Drift monitor (Evidently)
 
