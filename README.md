@@ -136,6 +136,7 @@ is not reproducible, and MLflow says so out loud.
 # Gate — the script CI calls. Exit 0 = ship, 1 = block, 2 = broken.
 python -m src.registry.gate                       # models/model.pt on val
 python -m src.registry.gate --split test --json   # hold-out, machine-readable
+python -m src.registry.gate --mlflow-run <run_id> # also correct that run's metrics
 
 # Registry — refuses any run whose gate did not pass
 python -m src.registry.register --run <run_id>                  # -> @challenger

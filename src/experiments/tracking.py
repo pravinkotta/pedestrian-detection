@@ -135,10 +135,15 @@ def log_params(mlflow, cfg: dict) -> None:
     mlflow.log_params(payload)
 
 
-def log_metrics(mlflow, metrics: dict | None) -> None:
-    """Flatten the metric bundle to scalars, including per-class recall."""
+def flatten_scalars(metrics: dict | None) -> dict:
+    """Flatten the metric bundle to scalars, including per-class recall.
+
+    Shared with ``src.registry.gate``: whatever the gate measures has to be
+    written into MLflow in exactly the shape the training run used, or the
+    registry would show two different spellings of the same number.
+    """
     if not metrics:
-        return
+        return {}
     flat = {}
     for k, v in metrics.items():
         if k.startswith("_"):
@@ -149,7 +154,14 @@ def log_metrics(mlflow, metrics: dict | None) -> None:
                     flat[f"{k}/{sub}"] = float(val)
         elif isinstance(v, (int, float)):
             flat[k] = float(v)
-    mlflow.log_metrics(flat)
+    return flat
+
+
+def log_metrics(mlflow, metrics: dict | None) -> None:
+    """Flatten the metric bundle to scalars, including per-class recall."""
+    flat = flatten_scalars(metrics)
+    if flat:
+        mlflow.log_metrics(flat)
 
 
 def log_artifacts(mlflow, cfg: dict, checkpoint: Path | None) -> None:

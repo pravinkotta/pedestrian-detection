@@ -4,6 +4,7 @@ Run:
     python -m src.registry.gate                         # models/model.pt on val
     python -m src.registry.gate --split test            # hold-out evaluation
     python -m src.registry.gate --checkpoint models/old.pt --json
+    python -m src.registry.gate --mlflow-run <run_id>   # mirror metrics to MLflow
 
 Exit codes (this is the contract CI depends on):
 
@@ -37,6 +38,45 @@ CONFIG_PATH = PROJECT_ROOT / "configs" / "config.yaml"
 EXIT_PASS, EXIT_FAIL, EXIT_ERROR = 0, 1, 2
 
 
+def _log_to_mlflow(cfg: dict, run_id: str, metrics: dict, report: dict) -> None:
+    """Mirror the gate's measurements onto an existing MLflow run.
+
+    The Model Registry describes a run by the metrics *logged on it*, so when
+    the evaluation contract changes the run's numbers must be corrected too —
+    otherwise ``@champion`` is advertised by figures no code path produces
+    any more. (What triggered this: the RPN proposal caps were dead config
+    until ``apply_rpn_caps``; with them effective the eval runs at 200
+    proposals instead of 1000 and six metrics moved.)
+
+    Tracking is a record, never the verdict: a logging failure prints a
+    warning and leaves the gate's exit code untouched.
+    """
+    try:
+        import mlflow
+        from mlflow.tracking import MlflowClient
+
+        from src.experiments.tracking import flatten_scalars
+
+        db = PROJECT_ROOT / cfg.get("mlflow", {}).get("sqlite", "mlflow.db")
+        mlflow.set_tracking_uri(f"sqlite:///{db.as_posix()}")
+        client = MlflowClient()
+        client.get_run(run_id)  # surfaces a bad id with MLflow's own message
+        # module-level API: MlflowClient has no plural log_metrics(), and the
+        # active-run context does not apply to an arbitrary run_id
+        flat = flatten_scalars(metrics)
+        if flat:
+            mlflow.log_metrics(flat, run_id=run_id)
+        for key, value in {
+            "gate/verdict": "PASS" if report["passed"] else "FAIL",
+            "gate/split": report["split"],
+            "gate/evaluated_utc": report["generated_utc"],
+        }.items():
+            client.set_tag(run_id, key, value)
+        print(f"  mirrored onto MLflow run {run_id}")
+    except Exception as exc:  # noqa: BLE001 — reporting must not change the verdict
+        print(f"  [warn] MLflow mirror skipped ({run_id}): {exc}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Evaluation gate (ship / no-ship)")
     parser.add_argument("--config", default=str(CONFIG_PATH))
@@ -47,6 +87,10 @@ def main() -> int:
     parser.add_argument("--report", default="outputs/gate_report.json")
     parser.add_argument("--json", action="store_true",
                         help="print the full report as JSON")
+    parser.add_argument("--mlflow-run", default=None, metavar="RUN_ID",
+                        help="also write the measured metrics onto this MLflow "
+                             "run, so registry numbers always match the eval "
+                             "config actually in force")
     args = parser.parse_args()
 
     try:
@@ -113,6 +157,9 @@ def main() -> int:
     out = PROJECT_ROOT / args.report
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(report, indent=2), encoding="utf-8")
+
+    if args.mlflow_run:
+        _log_to_mlflow(cfg, args.mlflow_run, metrics, report)
 
     print()
     if args.json:

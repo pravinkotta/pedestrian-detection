@@ -231,3 +231,61 @@ def test_registry_uses_mlflow_aliases_not_stages():
 def test_gate_distinguishes_fail_from_error_in_docstring():
     src = (ROOT / "src" / "registry" / "gate.py").read_text(encoding="utf-8")
     assert "EXIT_PASS, EXIT_FAIL, EXIT_ERROR = 0, 1, 2" in src
+
+
+# --------------------------------------------------------------------------
+# gate -> MLflow mirror (--mlflow-run)
+# --------------------------------------------------------------------------
+def _mirror_cfg(tmp_path: Path) -> dict:
+    """Config fragment pointing the mirror at a throwaway sqlite file."""
+    return {"mlflow": {"sqlite": str(tmp_path / "mirror.db")}}
+
+
+def test_gate_mirror_writes_metrics_and_verdict_tags(tmp_path):
+    """--mlflow-run must correct a run's numbers in the registry's spelling."""
+    import mlflow
+
+    from src.registry.gate import _log_to_mlflow
+
+    prev = mlflow.get_tracking_uri()
+    try:
+        mlflow.set_tracking_uri(
+            f"sqlite:///{(tmp_path / 'mirror.db').as_posix()}")
+        with mlflow.start_run() as active:
+            run_id = active.info.run_id
+
+        _log_to_mlflow(
+            _mirror_cfg(tmp_path), run_id,
+            metrics={"recall_at_fpr": 0.8854,
+                     "per_class_recall": {"pedestrian": 0.8531}},
+            report={"passed": True, "split": "val",
+                    "generated_utc": "2026-10-26T00:00:00+00:00"},
+        )
+
+        from mlflow.tracking import MlflowClient
+        run = MlflowClient().get_run(run_id)
+        assert run.data.metrics["recall_at_fpr"] == 0.8854
+        assert run.data.metrics["per_class_recall/pedestrian"] == 0.8531
+        assert run.data.tags["gate/verdict"] == "PASS"
+        assert run.data.tags["gate/split"] == "val"
+    finally:
+        mlflow.set_tracking_uri(prev)
+
+
+def test_gate_mirror_never_raises_for_tracking_problems(tmp_path, capsys):
+    """Tracking is a record, never the verdict — a bad run id must warn only."""
+    import mlflow
+
+    from src.registry.gate import _log_to_mlflow
+
+    prev = mlflow.get_tracking_uri()
+    try:
+        _log_to_mlflow(
+            _mirror_cfg(tmp_path), "run-that-does-not-exist",
+            metrics={"recall_at_fpr": 0.9},
+            report={"passed": True, "split": "val",
+                    "generated_utc": "2026-10-26T00:00:00+00:00"},
+        )
+    finally:
+        mlflow.set_tracking_uri(prev)
+    assert "[warn]" in capsys.readouterr().out

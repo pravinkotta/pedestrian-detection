@@ -38,6 +38,29 @@ def test_flatten_survives_mlflow_500_char_limit():
     assert len(payload["k"]) == 500, "MLflow rejects params over 500 chars"
 
 
+def test_flatten_scalars_matches_the_mlflow_metric_shape():
+    """The gate mirrors metrics into MLflow with this exact spelling.
+
+    ``log_metrics`` (training) and ``_log_to_mlflow`` (gate) must agree on
+    key names, or the registry would carry two dialects of one number — e.g.
+    ``per_class_recall/pedestrian`` here vs something else there.
+    """
+    from src.experiments.tracking import flatten_scalars
+
+    flat = flatten_scalars({
+        "recall_at_fpr": 0.8854,
+        "per_class_recall": {"pedestrian": 0.8531, "cyclist": 0.907},
+        "_raw": [1, 2, 3],     # internal bookkeeping, never a metric
+        "nothing": None,       # not a scalar -> dropped, like MLflow would
+    })
+    assert flat == {
+        "recall_at_fpr": 0.8854,
+        "per_class_recall/pedestrian": 0.8531,
+        "per_class_recall/cyclist": 0.907,
+    }
+    assert flatten_scalars(None) == {}
+
+
 def test_git_info_returns_sha_and_dirty_flag():
     from src.experiments.tracking import git_info
 
