@@ -38,9 +38,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
@@ -63,9 +63,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
@@ -104,7 +104,7 @@ jobs:
 
       - name: Upload the gate report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: gate-report-test-job
           path: outputs/gate_report.json
@@ -119,7 +119,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Build the default image (torch + onnx)
         # Retried: the first CI run died on a transient `502 Bad Gateway`
@@ -177,9 +177,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
@@ -217,7 +217,7 @@ jobs:
       # S3 and no MLflow registry to fetch weights from, so the artifact has
       # to travel through the workflow instead.
       - name: Upload the exported model
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: model
           path: models/model.onnx
@@ -225,7 +225,7 @@ jobs:
 
       - name: Upload the gate report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: gate-report
           path: outputs/gate_report.json
@@ -251,7 +251,7 @@ jobs:
       packages: write
       actions: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # The checkpoint-free image: code only, weights fetched at runtime.
       - name: Build the base image (slim, ONNX only)
@@ -259,7 +259,7 @@ jobs:
 
       # Bake in the model this exact run trained and gate-checked.
       - name: Download the trained model
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: model
           path: artifact
