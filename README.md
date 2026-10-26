@@ -85,8 +85,12 @@ pytest -q                             # 40 tests total
 Output: `models/model.pt` — a checkpoint containing the weights, class list,
 training history, metrics and the config used to produce it.
 
-> `--smoke` is what CI runs on every push: it catches broken imports, bad
-> tensor shapes and dataset regressions in seconds instead of 25 minutes.
+> `--smoke` is a *plumbing* check: it trains 2 batches and deliberately does
+> **not** write `models/model.pt`, so it can never clobber a real checkpoint.
+> CI uses it for quick local runs, but the `test` job trains a full **1 epoch**
+> instead, because the API/ONNX tests need an actual checkpoint to serve —
+> without one they would all 503. The 3-epoch run + gate lives in the
+> `train-and-gate` job.
 > Set `train.eval_each_epoch: false` in config if you want to skip the
 > end-of-run evaluation.
 
@@ -294,7 +298,7 @@ parallel (wall clock = the slowest one, not the sum):
 | job | what it proves | ~time |
 |---|---|---|
 | **lint** | `ruff check .` with `target-version = py310` from `ruff.toml` | <1 min |
-| **test** | rebuild dataset → smoke-train (so tests get a *real* checkpoint) → `pytest -q` | ~10 min |
+| **test** | rebuild dataset → 1-epoch train (so tests get a *real* checkpoint) → `pytest -q` | ~10 min |
 | **docker** | both image variants build; slim really has no `torch`; API boots model-less | ~5 min |
 | **train-and-gate** | full training → `src.registry.gate` **exit code** → `export_onnx --verify` → register `@challenger` | ~25 min |
 

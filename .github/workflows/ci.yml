@@ -54,9 +54,9 @@ jobs:
         run: ruff check .
 
   # ---------------------------------------------------------------------------
-  # 2. Data pipeline + test suite. Builds the dataset, smoke-trains so the
-  #    tests get a REAL checkpoint (otherwise every model/ONNX test skips),
-  #    then runs the whole suite.
+  # 2. Data pipeline + test suite. Builds the dataset, trains ONE epoch so the
+  #    tests get a REAL checkpoint (--smoke writes none, by design), then runs
+  #    the whole suite.
   # ---------------------------------------------------------------------------
   test:
     name: Data + tests
@@ -86,8 +86,18 @@ jobs:
           python -m src.data.convert_to_coco
           python -m src.data.make_gold
 
-      - name: Smoke train (produces models/model.pt for the test suite)
-        run: python -m src.experiments.run_experiment --smoke --run-name ci-smoke
+      # --smoke deliberately does NOT write models/model.pt (train.py guards
+      # it so a plumbing check can never clobber a real checkpoint). Without a
+      # checkpoint every API test would 503. So the suite gets a genuine —
+      # but small and therefore mediocre — 1-epoch model instead.
+      - name: Train 1 epoch (gives the test suite a real checkpoint)
+        run: python -m src.experiments.run_experiment --epochs 1 --run-name ci-test
+
+      # Produce the report the registry tests read. The verdict of THIS model
+      # is irrelevant (1 epoch is not a shippable model) and is enforced by
+      # the train-and-gate job, so a non-zero exit must not fail this job.
+      - name: Write the gate report
+        run: python -m src.registry.gate || true
 
       - name: pytest
         run: pytest -q
