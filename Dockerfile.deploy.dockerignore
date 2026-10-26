@@ -1,0 +1,9 @@
+# Build context for `docker build -f Dockerfile.deploy` ONLY.
+# BuildKit reads this instead of .dockerignore when Dockerfile.deploy is the
+# build file — so this is the one build allowed to see the weights, and it
+# sees NOTHING else (a stray multi-hundred-MB context would otherwise sneak
+# back in through this door).
+*
+!models/
+models/*
+!models/model.onnx

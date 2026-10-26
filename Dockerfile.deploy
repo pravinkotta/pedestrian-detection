@@ -1,0 +1,33 @@
+# syntax=docker/dockerfile:1
+# =============================================================================
+#  Deploy image — the slim serving image PLUS the trained ONNX weights.
+#
+#  Two-step build (the base image comes from ./Dockerfile):
+#
+#      docker build --build-arg INSTALL_TORCH=0 -t pedestrian-api:slim .
+#      docker build -f Dockerfile.deploy --build-arg BASE_IMAGE=pedestrian-api:slim \
+#                   -t ghcr.io/<owner>/<repo>:<tag> .
+#
+#  Why a separate Dockerfile exists at all:
+#  .dockerignore keeps weights and data out of EVERY build context (see its
+#  header — a stray `docker build .` must never ship the dataset). BuildKit
+#  reads `<dockerfile>.dockerignore` next to the Dockerfile it was given, so
+#  `Dockerfile.deploy` gets its own context rules: this one build may see
+#  models/model.onnx, every other build still cannot.
+#
+#  Why the weights are baked in HERE: the EC2 box has no MLflow registry to
+#  fetch from (the tracking store is a local sqlite file) and no S3 access,
+#  and a deployed API should not depend on a training-time service to boot.
+#  Code ships via GHCR, weights ship with the code, neither is a runtime
+#  dependency on the training stack.
+# =============================================================================
+ARG BASE_IMAGE=pedestrian-api:slim
+FROM ${BASE_IMAGE}
+
+# ONNX_MODEL_PATH already points at /app/models/model.onnx (set in the
+# runtime stage) — until now that path simply did not exist, which is why
+# /health on a base image reports model_loaded=false. The file makes it true.
+# auto-backend is inherited, but onnx is explicit: this variant carries no
+# torch, and `auto` must never be left to guess in production.
+ENV SERVE_BACKEND=onnx
+COPY models/model.onnx /app/models/model.onnx

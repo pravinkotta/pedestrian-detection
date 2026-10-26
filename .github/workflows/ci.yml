@@ -213,6 +213,16 @@ jobs:
           echo "registering run $RUN_ID"
           python -m src.registry.register --run "$RUN_ID" --alias challenger
 
+      # The deploy job bakes this into the shipping image. The EC2 box has no
+      # S3 and no MLflow registry to fetch weights from, so the artifact has
+      # to travel through the workflow instead.
+      - name: Upload the exported model
+        uses: actions/upload-artifact@v4
+        with:
+          name: model
+          path: models/model.onnx
+          if-no-files-found: error
+
       - name: Upload the gate report
         if: always()
         uses: actions/upload-artifact@v4
@@ -220,3 +230,57 @@ jobs:
           name: gate-report
           path: outputs/gate_report.json
           if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
+  # 5. Deploy — ship the image that passed everything above to GHCR, where the
+  #    EC2 box pulls it anonymously (public repo -> public package). No AWS or
+  #    GitHub secrets: GITHUB_TOKEN covers ghcr, and the instance needs no
+  #    credentials because it never talks to ECR.
+  #
+  #    The instance polls the tag every 5 minutes (deploy/user-data.sh), so
+  #    "push to main" reaching production is a pull + restart on the box.
+  # ---------------------------------------------------------------------------
+  deploy:
+    name: Publish to GHCR
+    needs: [lint, test, docker, train-and-gate]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+
+      # The checkpoint-free image: code only, weights fetched at runtime.
+      - name: Build the base image (slim, ONNX only)
+        run: docker build --build-arg INSTALL_TORCH=0 -t pedestrian-api:slim .
+
+      # Bake in the model this exact run trained and gate-checked.
+      - name: Download the trained model
+        uses: actions/download-artifact@v4
+        with:
+          name: model
+          path: artifact
+
+      - name: Build the deploy image (base + weights)
+        run: |
+          # upload/download may nest the file; place it where the COPY expects
+          mkdir -p models
+          find artifact -name 'model.onnx' -exec cp {} models/model.onnx \;
+          ls -la models/model.onnx
+          docker build -f Dockerfile.deploy \
+            --build-arg BASE_IMAGE=pedestrian-api:slim \
+            -t pedestrian-api:deploy .
+
+      - name: Push to GHCR
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | \
+            docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          IMG="ghcr.io/${{ github.repository }}"
+          docker tag pedestrian-api:deploy "${IMG}:latest"
+          docker tag pedestrian-api:deploy "${IMG}:${GITHUB_SHA}"
+          docker push "${IMG}:latest"
+          docker push "${IMG}:${GITHUB_SHA}"
+          echo "published ${IMG}:latest (deployed by the instance poller)"
