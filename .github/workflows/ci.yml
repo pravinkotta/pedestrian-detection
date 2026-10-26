@@ -122,10 +122,25 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Build the default image (torch + onnx)
-        run: docker build -t pedestrian-api:ci .
+        # Retried: the first CI run died on a transient `502 Bad Gateway`
+        # from registry-1.docker.io while pulling python:3.10-slim — an
+        # upstream outage, not a repo problem. Three attempts, backing off.
+        run: |
+          for i in 1 2 3; do
+            docker build -t pedestrian-api:ci . && exit 0
+            echo "::warning::build attempt $i failed (often a Docker Hub 502); retrying"
+            sleep $((i * 20))
+          done
+          exit 1
 
       - name: Build the slim image (onnx only)
-        run: docker build --build-arg INSTALL_TORCH=0 -t pedestrian-api:ci-slim .
+        run: |
+          for i in 1 2 3; do
+            docker build --build-arg INSTALL_TORCH=0 -t pedestrian-api:ci-slim . && exit 0
+            echo "::warning::slim build attempt $i failed (often a Docker Hub 502); retrying"
+            sleep $((i * 20))
+          done
+          exit 1
 
       - name: The slim image must not contain torch
         run: |

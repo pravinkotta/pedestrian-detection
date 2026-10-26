@@ -50,7 +50,10 @@ CONFIG_PATH = PROJECT_ROOT / "configs" / "config.yaml"
 # 32, and a static shape keeps RoIAlign + FPN math exactly reproducible.
 DEFAULT_H, DEFAULT_W = 192, 256
 
-# Fixed number of RPN proposals handed to the box head (== rpn.post_nms_top_n_test).
+# Fixed number of RPN proposals handed to the box head. MUST stay <= the
+# effective rpn post-NMS cap (build_model.POST_NMS_TOP_N_TEST, applied by
+# apply_rpn_caps) — enforced by the guard in make_wrapper, because torch
+# emitting MORE proposals than this would be silently truncated by the graph.
 FIXED_PROPOSALS = 200
 
 
@@ -78,9 +81,31 @@ def make_wrapper(model, fixed_proposals: int = FIXED_PROPOSALS):
 
     The score threshold is also lifted to 0.0 *in the graph* so the API can
     vary ``score_thresh`` per request without re-exporting.
+
+    **Guard:** padding only *adds* rows if torch's own filter returns at most
+    ``fixed_proposals``. If the RPN caps are not actually in effect (they are
+    easy to lose — see ``build_model.apply_rpn_caps``), torch emits 208-355
+    proposals while the graph keeps 200 and the two backends silently
+    disagree on every low-score detection. That mismatch is checked here and
+    raises instead of diverging.
     """
     import torch
     from torch import nn
+
+    caps = getattr(model.rpn, "_post_nms_top_n", None)
+    effective_cap = caps.get("testing") if isinstance(caps, dict) else None
+    if effective_cap is None:
+        raise RuntimeError(
+            "cannot read rpn._post_nms_top_n['testing'] - cannot prove the "
+            "proposal cap matches the ONNX graph. Apply build_model.apply_rpn_caps()."
+        )
+    if effective_cap > fixed_proposals:
+        raise RuntimeError(
+            f"RPN post-NMS cap ({effective_cap}) exceeds the ONNX proposal "
+            f"canvas ({fixed_proposals}): torch would emit more proposals than "
+            "the graph and the torch/onnx backends would disagree. Apply "
+            "build_model.apply_rpn_caps() so both run at the same budget."
+        )
 
     class _Wrapper(nn.Module):
         def __init__(self):
@@ -99,10 +124,15 @@ def make_wrapper(model, fixed_proposals: int = FIXED_PROPOSALS):
                            num_anchors_per_level):
             """Run the real RPN filter, then pad/truncate to a fixed count.
 
-            ``orig`` caps the result at ``post_nms_top_n_test``, so this only
-            ever *adds* rows: duplicates of real proposals (harmless — the box
-            head's NMS removes them) plus a degenerate sentinel row when the
-            image produced very few proposals. A sentinel at (0,0,0,0) decodes
+            ``orig`` caps the result at ``post_nms_top_n()`` — which is only
+            true when ``apply_rpn_caps`` actually wrote that cap into the
+            ``_post_nms_top_n`` dict (a plain ``rpn.post_nms_top_n_test = 200``
+            assignment is dead config torchvision never reads). The guard at
+            the top of :func:`make_wrapper` proves it before tracing, so here
+            the result is at most ``fixed_proposals`` and this step only ever
+            *adds* rows: duplicates of real proposals (harmless — the box
+            head's NMS removes them) plus a sentinel row when the image
+            produced very few proposals. A sentinel at (0,0,0,0) decodes
             back to a zero-area box and is discarded by the box head's
             ``remove_small_boxes``, so it can never surface as a detection.
 

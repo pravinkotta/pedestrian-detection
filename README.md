@@ -267,7 +267,13 @@ Two details that make the graph safe to run:
 * **proposal count pinned to 200** with tensor-only arithmetic — the
   TorchScript tracer freezes data-dependent Python ints (`boxes_per_image`,
   `box_sum`) at export time, so a graph traced on one frame otherwise breaks
-  on the next.
+  on the next. The pin only holds if *torch* runs at the same budget:
+  `build_model.apply_rpn_caps()` writes the caps where torchvision actually
+  reads them (`rpn._post_nms_top_n["testing"]`). The notebook's
+  `rpn.post_nms_top_n_test = 200` is dead config — a plain attribute nothing
+  consults — so until the fix torch emitted 208–355 proposals against a
+  200-row graph and the two backends disagreed on every low-score detection.
+  `make_wrapper()` now refuses to export unless both budgets agree.
 * **`n_dets` left dynamic** in `dynamic_axes`, because padding detections to
   a fixed count would bake another such int.
 

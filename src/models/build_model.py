@@ -11,6 +11,18 @@ head, which dominates CPU latency. Dropping to 200 post-NMS proposals is what
 keeps inference inside a plausible edge budget while preserving recall on
 dense scenes (notebook: 734 ms -> and it is the documented reason the
 MobileNetV3 backbone was chosen at all).
+
+**Those two assignments are dead code.** ``RegionProposalNetwork`` exposes no
+``pre_nms_top_n_test`` / ``post_nms_top_n_test`` *property* — the statement
+above simply creates two plain instance attributes that nothing reads, while
+``post_nms_top_n()`` keeps returning the constructor's 1000/1000. The caps
+never took effect, and the mismatch eventually showed up as a real failure:
+the ONNX graph bakes ``FIXED_PROPOSALS = 200`` (traced shapes must be static)
+while torch ran 208-355 proposals, so the two backends only agreed while the
+dropped proposals happened not to matter. ``apply_rpn_caps`` writes into the
+``_pre_nms_top_n`` / ``_post_nms_top_n`` dicts that
+``post_nms_top_n()`` actually consults, making one proposal budget true for
+torch, for evaluation and for the graph.
 """
 
 from __future__ import annotations
@@ -25,6 +37,37 @@ from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
 # RPN proposal caps for test-time inference (edge-deployment optimisation)
 PRE_NMS_TOP_N_TEST = 600
 POST_NMS_TOP_N_TEST = 200
+
+
+def apply_rpn_caps(model: torch.nn.Module,
+                   pre: int = PRE_NMS_TOP_N_TEST,
+                   post: int = POST_NMS_TOP_N_TEST) -> torch.nn.Module:
+    """Make the proposal caps real, not decorative.
+
+    torchvision reads ``rpn._pre_nms_top_n["testing"]`` and
+    ``rpn._post_nms_top_n["testing"]`` (via the ``pre_nms_top_n()`` /
+    ``post_nms_top_n()`` accessors). Writing ``rpn.post_nms_top_n_test = 200``
+    instead only shadows the name on the instance, which is why the notebook's
+    caps were silently inactive — see the module docstring.
+
+    Training caps are left alone: proposal sampling there is free (the box
+    head does not run) and more candidates only helps.
+    """
+    rpn = model.rpn
+    rpn.pre_nms_top_n_test = pre          # kept so describe()/the notebook's
+    rpn.post_nms_top_n_test = post        # declared values stay visible
+    for private, value in (("_pre_nms_top_n", pre),
+                           ("_post_nms_top_n", post)):
+        caps = getattr(rpn, private, None)
+        if isinstance(caps, dict) and "testing" in caps:
+            caps["testing"] = int(value)
+        else:  # torchvision changed its internals: fail loudly, not silently
+            raise RuntimeError(
+                f"torchvision's RegionProposalNetwork no longer exposes {private}"
+                " - the proposal caps in build_model() are no longer applied "
+                "and the ONNX graph would diverge from torch."
+            )
+    return model
 
 
 def resolve_device(name: str = "auto") -> torch.device:
@@ -71,8 +114,8 @@ def build_model(num_classes: int, pretrained: bool = True,
     in_features = model.roi_heads.box_predictor.cls_score.in_features
     model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
 
-    model.rpn.pre_nms_top_n_test = PRE_NMS_TOP_N_TEST
-    model.rpn.post_nms_top_n_test = POST_NMS_TOP_N_TEST
+    # the caps must be APPLIED, not merely assigned (see apply_rpn_caps)
+    apply_rpn_caps(model)
 
     if cfg:
         train = cfg.get("train", {})
@@ -103,8 +146,8 @@ def describe(model: torch.nn.Module) -> dict:
         "params_millions": round(n_params / 1e6, 1),
         "params_trainable": trainable,
         "device": str(next(model.parameters()).device),
-        "rpn_pre_nms_top_n_test": model.rpn.pre_nms_top_n_test,
-        "rpn_post_nms_top_n_test": model.rpn.post_nms_top_n_test,
+        "rpn_pre_nms_top_n_test": model.rpn.pre_nms_top_n(),
+        "rpn_post_nms_top_n_test": model.rpn.post_nms_top_n(),
         "image_min_size": list(model.transform.min_size),
         "image_max_size": model.transform.max_size,
         "box_detections_per_img": model.roi_heads.detections_per_img,
