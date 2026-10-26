@@ -5,6 +5,11 @@ promoted from notebook research code to a production ML pipeline deployed on **A
 (the mentor diagram's ECS/Fargate target — see [Stage 8](#stage-8--deploy-on-aws-ec2--ghcr-auto-pull)
 for why EC2 won on cost).
 
+> 📖 **[docs/PROJECT_WALKTHROUGH.md](docs/PROJECT_WALKTHROUGH.md)** — the full
+> step-by-step story of this project: what was built at every stage, *why*,
+> **every failure and how it was fixed**, the decisions and trade-offs, the
+> evidence behind each claim, and an interview-style Q&A.
+
 **Headline metric:** *Recall @ FPR ≤ 1%* — a safety metric, not mAP. A missed pedestrian
 costs far more than a false alarm, so recall is optimised subject to a low false-positive ceiling.
 
