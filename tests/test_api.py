@@ -93,10 +93,37 @@ def test_model_endpoint_reports_which_code_is_serving(client):
     assert body["git_sha"]  # never empty
 
 
-def test_root_lists_docs(client):
-    body = client.get("/").json()
+def test_meta_lists_docs(client):
+    """The JSON service metadata lives at /meta (moved off /, which is now the
+    dark landing page — see the UI task, 2026-11-07)."""
+    body = client.get("/meta").json()
     assert body["docs"] == "/docs"
+    assert body["landing"] == "/"
     assert "version" in body
+
+
+def test_root_is_the_dark_landing_page(client):
+    """/ serves HTML, not JSON: a hiring manager's first click lands on a
+    real page that states the headline metric and links to the docs."""
+    res = client.get("/")
+    assert res.status_code == 200
+    assert res.headers["content-type"].startswith("text/html")
+    html = res.text
+    assert "Pedestrian Detection API" in html          # the title
+    assert 'href="/docs"' in html                      # the docs link works
+    assert "0.8854" in html                            # headline metric visible
+    assert "RECALL @ FPR" in html
+
+
+def test_docs_carry_the_dark_theme(client):
+    """/docs is stock Swagger UI *except* for the injected customCss — assert
+    the injection survives, so a FastAPI upgrade can't silently drop it."""
+    res = client.get("/docs")
+    assert res.status_code == 200
+    body = res.text
+    assert "customCss" in body or "customCSS" in body
+    assert "--accent:#22d3ee" in body                  # a token from _CSS
+    assert "swagger-ui .topbar" in body                # a real dark override
 
 
 # --------------------------------------------------------------------------

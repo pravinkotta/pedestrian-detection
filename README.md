@@ -190,7 +190,15 @@ confidently calls cyclists "vehicles."
 > serving traffic, `@challenger` at the candidate. Promoting a retrain is a
 > pointer flip, so rollback is instant and no version history is lost.
 
-## Stage 5 — FastAPI serving
+## Stage 5 - FastAPI serving
+
+`api/main.py` serves the model, and it opens with a **dark, self-styled
+landing page** at `/` (headline metric, endpoint cards, links to `/docs`) —
+not the stock "Hello JSON" response; the JSON service metadata moved to
+`/meta`, and the Swagger UI at `/docs` is themed to match by injecting its
+`customCss` option. Two tests guard the whole change (`/` is HTML with the
+metric visible, `/docs` still carries the dark-CSS tokens, so a FastAPI
+upgrade can't silently drop the styling).
 
 ```powershell
 uvicorn api.main:app --host 0.0.0.0 --port 8000
