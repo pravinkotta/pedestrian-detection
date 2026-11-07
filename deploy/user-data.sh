@@ -68,6 +68,13 @@ deploy_once() {
       "$IMAGE" || return 1
     echo "[deployer] $(date -Is) deployed ${want#sha256:} (was ${have#sha256:})"
   fi
+  # Every deploy leaves the previous image behind; on the 8 GB EBS volume
+  # these pile up and eventually fill the 97%-full disk, wedging the NEXT
+  # pull with "no space left on device" (which itself looks to users like
+  # "the DNS/API is down"). After every successful cycle, drop everything
+  # not referenced by a running container (-a includes the just-replaced
+  # old image; the running container's own image is never touched).
+  docker image prune -a -f >/dev/null 2>&1 || true
 }
 
 while true; do

@@ -437,6 +437,16 @@ The first live deploy was observed end-to-end: commit pushed → CI published �
 the box replaced its own container 3½ minutes later, `git_sha` flipping from
 `unknown` to the pushed commit with no human touching anything.
 
+**Disk incident (2026-11-07):** several deploys left the previous container
+image behind each time; after ~a week of start/stop cycles three images had
+filled the 8 GB disk to **97%**, and the poller's next pull wedged with
+"no space left on device" — from the outside that perfectly looked like
+"the API/DNS is down", while in truth the box was fine and only the deploy
+was failing. The poller now runs `docker image prune -a -f` after every
+cycle (the running container's own image is never touched), so disk usage
+is flat, not a leak. If the API ever looks down, `df -h /` over SSH is the
+first thing to check — before assuming DNS.
+
 ### Day-2 operations
 
 ```powershell

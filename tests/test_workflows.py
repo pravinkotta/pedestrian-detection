@@ -194,6 +194,20 @@ def test_user_data_ships_only_empty_duckdns_placeholders():
             in text), "install must be skipped while placeholders are empty"
 
 
+def test_deployer_prunes_old_images():
+    """Every deploy leaves the previous image behind; on this instance's
+    8 GB volume three of them brought the disk to 97% and the NEXT pull
+    wedged with 'no space left on device' (day one of DuckDNS, 2026-11-07 —
+    it looked like the API/DNS was down; it was the disk). The poller must
+    prune after every successful fetch-cycle so disk usage is a constant,
+    not a leak.
+    """
+    text = (DUCKDNS_DIR / "user-data.sh").read_text(encoding="utf-8")
+    assert "docker image prune -a -f" in text, (
+        "poller must prune unreferenced images each cycle"
+    )
+
+
 def test_duckdns_updater_sends_the_explicit_instance_ip():
     """If the updater ever trusted auto-detection, calling it from a laptop
     (or from a CI runner) would silently repoint the domain to THAT machine's
