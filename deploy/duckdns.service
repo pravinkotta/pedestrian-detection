@@ -1,0 +1,8 @@
+[Unit]
+Description=DuckDNS self-updater (keeps the DNS name on this instance's current public IP)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/duckdns/duckdns.sh

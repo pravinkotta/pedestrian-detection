@@ -11,6 +11,7 @@ These read the actual YAML the Actions service will execute. They are cheap
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import yaml
@@ -143,3 +144,69 @@ def test_shell_scripts_are_lf_only():
         assert b"\r\n" not in path.read_bytes(), (
             f"{path.relative_to(REPO)} has CRLF line endings"
         )
+
+
+# ---------------------------------------------------------------------------
+# DuckDNS properties — a *permanent* domain name for the ephemeral-public-IP
+# instance. The token only ever lives on the box; these tests keep it that way.
+# ---------------------------------------------------------------------------
+
+DUCKDNS_DIR = REPO / "deploy"
+_UUID_RE = re.compile(
+    r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}"
+    r"-[0-9a-fA-F]{12}\b"
+)
+
+
+def test_no_duckdns_token_is_committed():
+    """The DuckDNS token authorises anyone holding it to repoint our DNS.
+
+    It exists ONLY in /etc/duckdns/config on the box (mode 600) — never in
+    user-data.sh, never in a workflow, never in this test itself. The regex
+    also catches the real-world failure of pasting a token into a doc.
+    """
+    for path in REPO.rglob("*"):
+        if not path.is_file() or set(path.parts) & _SKIP_DIRS:
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+        match = _UUID_RE.search(text)
+        assert not match, (
+            f"{path.relative_to(REPO)} contains a UUID that looks like a "
+            f"DuckDNS token ('{match.group(0)[:8]}...') — tokens live on the "
+            "box only"
+        )
+
+
+def test_user_data_ships_only_empty_duckdns_placeholders():
+    """First-boot self-install must be opt-in and secret-free.
+
+    An operator filling the two values in their LOCAL user-data copy before
+    `run-instances` gets a self-installing updater; the committed file must
+    keep both empty so `git push` can never leak a token.
+    """
+    text = (DUCKDNS_DIR / "user-data.sh").read_text(encoding="utf-8")
+    assert 'DUCKDNS_DOMAIN=""' in text, "placeholder must be empty in the repo"
+    assert 'DUCKDNS_TOKEN=""' in text, "placeholder must be empty in the repo"
+    assert ("if [ -n \"$DUCKDNS_DOMAIN\" ] && [ -n \"$DUCKDNS_TOKEN\" ]; then"
+            in text), "install must be skipped while placeholders are empty"
+
+
+def test_duckdns_updater_sends_the_explicit_instance_ip():
+    """If the updater ever trusted auto-detection, calling it from a laptop
+    (or from a CI runner) would silently repoint the domain to THAT machine's
+    IP. The canonical source is the instance metadata service (IMDSv2), sent
+    explicitly on every update.
+    """
+    text = (DUCKDNS_DIR / "duckdns.sh").read_text(encoding="utf-8")
+    assert "169.254.169.254" in text, "IP must come from the instance metadata service"
+    assert "X-aws-ec2-metadata-token" in text, "IMDSv2 (not the legacy v1 hop)"
+    assert "ip=${IP}" in text, "the update request must carry the explicit IP"
+
+    setup = (DUCKDNS_DIR / "duckdns-setup.sh").read_text(encoding="utf-8")
+    assert "chmod 600 /etc/duckdns/config" in setup, (
+        "the token file must be root-only"
+    )
+

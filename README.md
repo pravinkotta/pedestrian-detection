@@ -8,18 +8,22 @@ for why EC2 won on cost).
 **Headline metric:** *Recall @ FPR ≤ 1%* — a safety metric, not mAP. A missed pedestrian
 costs far more than a false alarm, so recall is optimised subject to a low false-positive ceiling.
 
-> ⏸ **Status (2026-10-26): the EC2 instance is stopped — there is no live
-> endpoint right now.** That was a deliberate choice to stop the ~$9.6/mo
-> charge. Stated honestly, what it does and doesn't affect:
-> - `LIVE_API_URL` still points at an address that no longer exists, so the
->   daily drift run reports **ERROR (exit 2)** against it — never a fake OK,
->   never a DRIFT, so a dead URL **never triggers a retrain**.
-> - CI, the 101 tests, the evaluation gate, the registry and both workflows
->   are completely unaffected — none of them touch the box.
-> - To bring it back: AWS console → EC2 → *Instance state → Start*, then
->   follow [Day-2 operations](#day-2-operations): resolve the new IP, update
->   `LIVE_API_URL`, re-prime the drift capture to ≥10 rows. The API then
->   self-redeploys within ~5 minutes — nobody starts a container by hand.
+> ♻️ **Status (2026-11-07): the API now has a PERMANENT address —
+> [http://peds-detect.duckdns.org:8000](http://peds-detect.duckdns.org:8000)** — a free DuckDNS name the
+> box keeps in sync by itself, so stop/start cycles no longer change the URL:
+> - The public IP is still ephemeral (no Elastic-IP permission), but nobody
+>   uses it anymore: a systemd updater on the box sends each fresh public IP
+>   to DuckDNS at every boot + every 5 min, within ~1-5 min after Start.
+> - `LIVE_API_URL` is set to the *name* — once, permanently. The daily drift
+>   cron follows restarts on its own; no re-pointing, no dead URLs.
+> - Stop/Start still needs the root console (see [Day-2 operations](#day-2-operations));
+>   everything after that — DNS, container (`--restart always`),
+>   self-redeploy to the newest image — is automatic.
+> - History: deliberately stopped 2026-10-26 → 2026-11-07 to save the
+>   ~$9.6/mo charge; the daily cron honestly reported ERROR (exit 2) against
+>   the dead URL the whole time — no fake OK, and never a DRIFT-triggered
+>   retrain. On the next start the box re-fetched the newest image by itself
+>   and the same setup resumed.
 
 ## Pipeline
 
@@ -413,14 +417,11 @@ push to main ──▶ CI (5 jobs, ~9 min) ──▶ ghcr.io/…/pedestrian-dete
 so "did my deploy land?" is one `curl`, not a guess:
 
 ```powershell
-# The public IP is EPHEMERAL (no ec2:AllocateAddress permission): every
-# stop/start hands out a fresh one, so NEVER hardcode it - resolve it first.
-# (STATUS 2026-10-26: the instance is STOPPED, so this prints nothing until
-#  it is started from the AWS console - see "Day-2 operations" below.)
-$IP = aws ec2 describe-instances --instance-ids i-084fbb0fb3cb86547 `
-  --query "Reservations[0].Instances[0].PublicIpAddress" --output text
-$API = "http://${IP}:8000"
-gh variable set LIVE_API_URL --body $API    # keeps the drift cron pointed here
+# The API's PERMANENT address - a free DuckDNS name the box keeps in sync
+# by itself (systemd timer: update at every boot + every 5 minutes).
+# The old "look up the new IP, re-point LIVE_API_URL" step no longer exists.
+$API = "http://peds-detect.duckdns.org:8000"
+gh variable set LIVE_API_URL --body $API    # one-time - the name never changes
 
 curl ${API}/health
 # {"status":"ok","model_loaded":true}
@@ -453,9 +454,10 @@ things live on the instance's EBS disk, so they survive stop/start: docker
 (`systemctl enable`), the `pedestrian-deployer` poller (it was `enable`d, so
 systemd starts it at every boot — and it recreates the container if it is
 missing), and the container's **`--restart always`** policy. Give it
-a minute or two after boot. What *does* change is the **public IP** (below),
-so re-point `LIVE_API_URL` or the scheduled drift run will honestly report
-ERROR against a dead URL.
+What *does* change is the **public IP** — but the DuckDNS updater on the
+box re-points the permanent name `peds-detect.duckdns.org` within minutes of boot, so the
+URL everyone uses never changes and `LIVE_API_URL` never needs touching
+again.
 
 > **Existing instances need one nudge.** `user-data.sh` only runs at *first*
 > boot, so an instance launched before the switch to `always` still runs the
@@ -475,27 +477,31 @@ ERROR against a dead URL.
    is denied `ec2:StopInstances`; billing stops, EBS ~$0.64/mo remains).
 2. **Start** — *Instance state → Start*, then give it **1–2 minutes**: boot →
    docker → `pedestrian-deployer` polls → container up.
-3. **Find the new IP** (it always changes — no Elastic IP):
-   `aws ec2 describe-instances --instance-ids i-084fbb0fb3cb86547 --query "Reservations[0].Instances[0].PublicIpAddress" --output text`
-4. **Re-point the monitor:** `gh variable set LIVE_API_URL --body http://<new-ip>:8000`
-5. **Verify:** `curl http://<new-ip>:8000/health` → `ok`, and `/model` shows the
-   expected `git_sha` (on 2026-10-26 this alone proved the self-redeploy: the
-   box came back on the *newest* commit without anyone touching it).
-6. **Re-prime the drift capture** before 05:00 UTC — it resets whenever the
+3. **Verify:** `curl http://peds-detect.duckdns.org:8000/health` -> `ok`, and
+   `/model` shows the expected `git_sha`. DuckDNS updates by itself within
+   minutes of boot; if the name ever lags, force one update:
+   `sudo systemctl start duckdns` (on 2026-10-26 this step alone proved the
+   self-redeploy: the box came back on the *newest* commit without anyone
+   touching it — repeated on 2026-11-07 after a 12-day stop, now via the
+   permanent name).
+4. **Re-prime the drift capture** before 05:00 UTC — it resets whenever the
    container is replaced, and the monitor needs ≥10 rows:
-   `1..24 | %{ curl -F "file=@data/val/val_0000.png;type=image/png" http://<new-ip>:8000/detect }`
+   `1..24 | %{ curl -F "file=@data/val/val_0000.png;type=image/png" http://peds-detect.duckdns.org:8000/detect }`
 
-Caveats, stated plainly: the public IP is **ephemeral** — there is no Elastic
-IP (no `ec2:AllocateAddress` permission), so every stop/start hands out a fresh
-address: `3.25.172.15` → `3.26.48.54` → and while the instance is **stopped,
-none at all**. Resolve it with the `aws ec2 describe-instances` call above
-rather than bookmarking it, and keep the `LIVE_API_URL` repo variable in sync
-(`gh variable set LIVE_API_URL --body http://<new-ip>:8000`) — otherwise the
-drift cron honestly reports ERROR against a dead address, never a fake OK.
-Port 8000 is open to the world and the API has **no auth** — fine for a demo,
-put it behind a reverse proxy or an ALB with auth before serving real traffic.
-Debugging shell access needs your `AI-LLM` key pair (port 22 is open); this
-agent never holds it.
+Caveats, stated plainly: the DuckDNS name is stable, but it depends on two
+things — being up (while the instance is stopped the record keeps the *last*
+IP, so the name still resolves but nothing answers: the drift cron honestly
+reports ERROR, never a fake OK), and DuckDNS's idle policy (free subdomains
+are released after ~30 days without an update — the daily 05:00 UTC cron
+doubles as the keep-alive ping that prevents that). For the record the
+ephemeral IP moved across three addresses while this project ran
+(`3.25.172.15` → `3.26.48.54` → `16.178.221.123`) — and since 2026-11-07
+nobody has had to know or track any of them. Port 8000 is open to the world
+and the API has **no auth** — fine for a demo, put it behind a reverse proxy
+or an ALB with auth before serving real traffic. The DuckDNS token lives
+ONLY on the box (`/etc/duckdns/config`, root-only, mode 600) — zero secrets
+in the repo. Debugging shell access needs your `AI-LLM` key pair (port 22
+is open); this agent never holds it.
 
 ## Stage 9 — Drift monitor (Evidently)
 
@@ -635,7 +641,7 @@ Properties worth stating:
   dispatches the retrain, which then visibly *waits for your approval*.
 
 Known limits, stated up front: the live URL lives in the `LIVE_API_URL` repo
-variable (update it when the box's ephemeral IP changes); scheduled workflows
+variable (set once to the DuckDNS name — the name follows the IP itself); scheduled workflows
 on public repos pause after 60 days without activity (any push re-enables
 them); and with one reviewer, "four-eyes" would be the next hardening step
 (`prevent_self_review: true` + a second reviewer).

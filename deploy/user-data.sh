@@ -96,3 +96,58 @@ UNIT
 systemctl daemon-reload
 systemctl enable --now pedestrian-deployer
 echo "[bootstrap] $(date -Is) deployer started"
+
+# ---------------------------------------------------------------------------
+# DuckDNS (optional): a PERMANENT domain instead of the ephemeral public IP.
+# The current instance was set up by SSH (deploy/duckdns-setup.sh). For a NEW
+# instance, fill both values in BEFORE launching and the self-updater installs
+# itself at first boot. Leave them EMPTY to skip entirely — the repo always
+# ships with placeholders, so no token is ever committed. duckdns.sh sends the
+# instance's real public IP explicitly (never auto-detect) and the timer
+# re-runs at every boot + every 5 min, so the name follows stop/start cycles.
+DUCKDNS_DOMAIN=""
+DUCKDNS_TOKEN=""
+if [ -n "$DUCKDNS_DOMAIN" ] && [ -n "$DUCKDNS_TOKEN" ]; then
+  mkdir -p /opt/duckdns /etc/duckdns
+  install -m 755 /dev/null /opt/duckdns/duckdns.sh
+  cat >/etc/duckdns/config <<'CFG'
+DOMAIN=
+TOKEN=
+CFG
+  printf 'DOMAIN=%s\nTOKEN=%s\n' "$DUCKDNS_DOMAIN" "$DUCKDNS_TOKEN" >/etc/duckdns/config
+  chmod 600 /etc/duckdns/config
+  cat >/opt/duckdns/duckdns.sh <<'DUCK'
+#!/usr/bin/env bash
+set -euo pipefail
+. /etc/duckdns/config
+T=$(curl -fsS -m 3 -X PUT 'http://169.254.169.254/latest/api/token' -H 'X-aws-ec2-metadata-token-ttl-seconds: 3')
+IP=$(curl -fsS -m 5 -H "X-aws-ec2-metadata-token: $T" http://169.254.169.254/latest/meta-data/public-ipv4)
+R=$(curl -fsS -m 10 "https://www.duckdns.org/update?domains=${DOMAIN}&token=${TOKEN}&ip=${IP}")
+[ "$R" = "OK" ] && echo "duckdns: ${DOMAIN}.duckdns.org -> ${IP}" || { echo "duckdns: $R" >&2; exit 1; }
+DUCK
+  chmod 755 /opt/duckdns/duckdns.sh
+  cat >/etc/systemd/system/duckdns.service <<'UNIT'
+[Unit]
+Description=DuckDNS self-updater (keeps the DNS name on this instance's current public IP)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/duckdns/duckdns.sh
+UNIT
+  cat >/etc/systemd/system/duckdns.timer <<'UNIT'
+[Unit]
+Description=Run the DuckDNS updater at every boot and every 5 minutes
+
+[Timer]
+OnBootSec=45s
+OnUnitActiveSec=5min
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target
+UNIT
+  systemctl daemon-reload
+  systemctl enable --now duckdns.timer
+fi
