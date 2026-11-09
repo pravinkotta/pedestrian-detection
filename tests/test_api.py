@@ -116,14 +116,22 @@ def test_root_is_the_dark_landing_page(client):
 
 
 def test_docs_carry_the_dark_theme(client):
-    """/docs is stock Swagger UI *except* for the injected customCss — assert
-    the injection survives, so a FastAPI upgrade can't silently drop it."""
+    """The custom /docs route injects a real <style> before </head>.
+
+    The "customCss" Swagger *config* option was silently ignored by the
+    bundled Swagger UI build (verified live, 2026-11-07), so the theme must
+    ship as injected HTML - assert exactly that, so a refactor of the route
+    or a FastAPI upgrade cannot silently drop the styling.
+    """
     res = client.get("/docs")
     assert res.status_code == 200
     body = res.text
-    assert "customCss" in body or "customCSS" in body
-    assert "--accent:#22d3ee" in body                  # a token from _CSS
-    assert "swagger-ui .topbar" in body                # a real dark override
+    assert "<style>" in body                       # the inline theme block
+    assert body.index("<style>") < body.index("</head>")
+    assert "--bg:#0f172a" in body                  # palette tokens present
+    assert "html,body{background:var(--bg)!important" in body
+    assert ".opblock" in body                      # swagger overrides present
+    assert "customCss" not in body                 # the dead config path is gone
 
 
 # --------------------------------------------------------------------------

@@ -195,10 +195,13 @@ confidently calls cyclists "vehicles."
 `api/main.py` serves the model, and it opens with a **dark, self-styled
 landing page** at `/` (headline metric, endpoint cards, links to `/docs`) —
 not the stock "Hello JSON" response; the JSON service metadata moved to
-`/meta`, and the Swagger UI at `/docs` is themed to match by injecting its
-`customCss` option. Two tests guard the whole change (`/` is HTML with the
-metric visible, `/docs` still carries the dark-CSS tokens, so a FastAPI
-upgrade can't silently drop the styling).
+`/meta`, and the Swagger UI at `/docs` is themed to match - a custom `/docs`
+route injects a dark `<style>` block into the served HTML (the first attempt
+used Swagger's `customCss` config option, which the bundled Swagger build
+silently ignored, so the injection is version-proof instead). Three tests
+guard the change (`/` is HTML with the metric visible, `/docs` carries the
+injected `<style>` before `</head>`, so a route refactor or FastAPI upgrade
+can't silently drop the styling).
 
 ```powershell
 uvicorn api.main:app --host 0.0.0.0 --port 8000

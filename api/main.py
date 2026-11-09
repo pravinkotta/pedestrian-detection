@@ -33,7 +33,8 @@ import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
-from fastapi import FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import FastAPI, File, HTTPException, Query, Response, UploadFile
+from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import HTMLResponse
 
 from api.schemas import (
@@ -49,11 +50,15 @@ from api.service import DEFAULT_THRESHOLD, ModelNotLoadedError, ModelService
 TITLE = "Pedestrian Detection API"
 VERSION = "1.0.0"
 
-# Dark theme (landing page + Swagger UI share the palette).
+# Dark theme shared by the landing page and the Swagger docs. Injected into
+# /docs as a real <style> element (a custom /docs route below) - NOT via the
+# "customCss" config option, which the bundled Swagger UI build silently
+# ignored (verified live on 2026-11-07).
 _CSS = (
-    ":root{--bg:#0f172a;--card:#1e293b;--ink:#e2e8f0;--dim:#94a3b8;"
+    ":root{--bg:#0f172a;--card:#111c30;--ink:#e2e8f0;--dim:#94a3b8;"
     "--accent:#22d3ee;--accent2:#818cf8;--line:#334155;--good:#34d399;"
-    "--warn:#fbbf24;--tag:#334155}"
+    "--warn:#fbbf24;--tag:#334155;--code:#0b1220}"
+    "html,body{background:var(--bg)!important;color:var(--ink)!important}"
 )
 _LANDING = f"""<!doctype html>
 <html lang="en"><head>
@@ -147,49 +152,104 @@ code{{background:#0b1220;border:1px solid var(--line);padding:.08rem .35rem;
 </div>
 </body></html>"""
 
-# Same palette injected straight into Swagger UI's own options - the page
-# keeps its interactive docs but stops looking like stock FastAPI.
-_SWAGGER_DARK = _CSS + """
-body{background:var(--bg)!important;color:var(--ink)!important}
-.swagger-ui .topbar{background:#1e293b}
-.swagger-ui .scheme-container{background:#1e293b;box-shadow:none}
-.swagger-ui .info .title,.swagger-ui .info div,.swagger-ui .info p,
-.swagger-ui .info li,.swagger-ui .opblock-title,
-.swagger-ui .parameter__name,.swagger-ui .parameter__type,
-.swagger-ui .opblock .opblock-summary-path,
-.swagger-ui .opblock .opblock-summary-path__deprecated,
-.swagger-ui .opblock .opblock-summary-description,
-.swagger-ui .tab li button.tablinks,
-.swagger-ui .responses-wrapper .responses-inner,
-.swagger-ui .opblock-body pre,.swagger-ui .opblock-body pre code,
-.swagger-ui .live-responses-table .live-responses .highlight code,
-.swagger-ui .response-col_status,.swagger-ui .response-col_description,
-.swagger-ui .opblock .response-description,
-.swagger-ui .md,.swagger-ui .text,.swagger-ui input,.swagger-ui select,
-.swagger-ui .body-param__text,.swagger-ui .model-box,.swagger-ui .model-title,
-.swagger-ui .pure-g .pure-u,.swagger-ui .models,.swagger-ui table thead th,
-.swagger-ui td,.swagger-ui .table-container td{color:var(--ink)!important}
-.swagger-ui .info a,.swagger-ui .model-box a{color:var(--accent)!important}
+# The docs page: inject the real dark <style> into the HTML that FastAPI's
+# standard get_swagger_ui_html() produces, before </head> so it lands after
+# swagger-ui.css and wins the cascade. Kept out of the OpenAPI schema.
+_SWAGGER_DARK = (
+    _CSS
+    + """
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-thumb{background:var(--line);border-radius:5px}
+::-webkit-scrollbar-track{background:var(--bg)}
+.swagger-ui .information-container,.swagger-ui .wrapper,.swagger-ui .responses,
+.swagger-ui .models,.swagger-ui #models,.swagger-ui .models-control
+{background:transparent!important}
+.swagger-ui .info .title{color:#f1f5f9!important}
+.swagger-ui .info .title small{background:var(--line)!important;color:var(--ink)}
 .swagger-ui .info .title small pre{color:var(--dim)}
-.swagger-ui .wrapper{background:transparent}
-.swagger-ui .opblock{background:#111c30;border-color:var(--line);
-                    box-shadow:0 0 .2rem #0007}
-.swagger-ui .opblock.opblock-get{background:#10251f;border-left-color:var(--good)}
-.swagger-ui .opblock.opblock-post{background:#28200f;border-left-color:var(--warn)}
-.swagger-ui .opblock.opblock-put{background:#101c33;border-left-color:var(--accent2)}
-.swagger-ui .opblock.opblock-delete{background:#2b1414;border-left-color:#f87171}
-.swagger-ui .btn,.swagger-ui .execute,.swagger-ui .btn-sm{background:#1e293b;
-        color:var(--accent);border:1px solid var(--line)}
-.swagger-ui .execute:hover{transform:none}
-.swagger-ui .parameter__extension{background:var(--tag)}
-.swagger-ui .model,.swagger-ui .model .prop,
-.swagger-ui .model .internal .prop{color:var(--dim)!important}
-.swagger-ui .models-control,.swagger-ui .models{background:transparent}
-.swagger-ui .model-toggle svg{fill:var(--dim)}
-.swagger-ui .highlight-code .language-json,
-.swagger-ui .highlight-code .language-yaml{background:#0b1220}
-.swagger-ui input[type=file]{color:var(--ink)}
-.swagger-ui .btn.select-file-border{border-color:var(--line)}"""
+.swagger-ui .info .description p,.swagger-ui .info .description div,
+.swagger-ui .info .description li,.swagger-ui .info .description em,
+.swagger-ui .info em,.swagger-ui .info a{color:#cbd5e1!important}
+.swagger-ui .info .description code{background:var(--code)!important;
+    color:var(--accent)!important;padding:.1rem .35rem;border-radius:4px!important}
+.swagger-ui .scheme-container{background:var(--card)!important;
+    box-shadow:none!important;border:none!important}
+.swagger-ui .scheme-container .auth-wrapper .authorize{background:transparent}
+.swagger-ui .auth-wrapper .authorize svg{fill:var(--accent)}
+.swagger-ui .opblock-tag{color:var(--ink)!important;
+    border-bottom:1px solid var(--line)!important;background:transparent!important}
+.swagger-ui .opblock-tag svg{fill:var(--dim)}
+.swagger-ui .opblock{background:var(--card)!important;
+    border:1px solid var(--line)!important;box-shadow:0 1px 2px #0009!important}
+.swagger-ui .opblock.opblock-get{background:rgba(56,189,248,.06)!important;
+    border-color:#164e63!important}
+.swagger-ui .opblock.opblock-post{background:rgba(74,222,128,.05)!important;
+    border-color:#14532d!important}
+.swagger-ui .opblock .opblock-summary-path,
+.swagger-ui .opblock .opblock-summary-path__deprecated
+{color:var(--ink)!important;text-shadow:none}
+.swagger-ui .opblock .opblock-summary-description{color:var(--dim)!important}
+.swagger-ui .opblock-section-header{background:#0f1d33!important;
+    box-shadow:none!important;border-bottom:1px solid var(--line)!important}
+.swagger-ui .opblock-section-header h4{color:#cbd5e1!important}
+.swagger-ui .opblock-section-header .btn{border-color:var(--line)!important;
+    color:var(--accent)!important;background:var(--card)!important}
+.swagger-ui .parameter__name{color:var(--ink)!important}
+.swagger-ui .parameter__name span{color:var(--dim)!important}
+.swagger-ui .parameter__type{color:var(--dim)!important}
+.swagger-ui .parameter__in,.swagger-ui .parameter__extension
+{color:var(--dim)!important;background:#334155!important}
+.swagger-ui table thead th,.swagger-ui table tbody td
+{color:#cbd5e1!important;border-bottom:1px solid var(--line)!important}
+.swagger-ui .response-col_status,.swagger-ui .response-col_description
+{color:#cbd5e1!important}
+.swagger-ui input,.swagger-ui select,.swagger-ui textarea,
+.swagger-ui .body-param__text{background:var(--code)!important;
+    color:var(--ink)!important;border:1px solid var(--line)!important}
+.swagger-ui .btn{background:var(--card)!important;color:var(--ink)!important;
+    border:1px solid var(--line)!important;box-shadow:none}
+.swagger-ui .btn.try-out__btn{color:var(--accent)!important;
+    background:transparent!important}
+.swagger-ui .btn.cancel{color:#f87171!important;background:transparent!important;
+    border:0!important}
+.swagger-ui .execute{background:#0ea5e9!important;color:#04283b!important;
+    border-color:#0ea5e9!important}
+.swagger-ui .execute:hover{background:#38bdf8!important;color:#04283b!important}
+.swagger-ui .markdown p,.swagger-ui .md,.swagger-ui .text{color:#cbd5e1!important}
+.swagger-ui pre,.swagger-ui .highlight-code,.swagger-ui .microlight
+{background:var(--code)!important;color:var(--ink)!important;
+    border:1px solid var(--line)!important}
+.swagger-ui .CodeMirror{background:var(--code)!important;
+    color:var(--ink)!important}
+.swagger-ui .cm-property{color:#7dd3fc!important}
+.swagger-ui .cm-string{color:#a5b4fc!important}
+.swagger-ui .cm-number{color:#fbbf24!important}
+.swagger-ui .cm-atom,.swagger-ui .cm-keyword{color:#f472b6!important}
+.swagger-ui .models h4,.swagger-ui #models h4,.swagger-ui .models-title
+{color:var(--ink)!important}
+.swagger-ui .model-box{background:var(--card)!important;
+    border:1px solid var(--line)!important;padding:10px 12px!important;
+    border-radius:8px}
+.swagger-ui .model-title{color:var(--ink)!important}
+.swagger-ui .model .prop .prop-name{color:#7dd3fc!important}
+.swagger-ui .model .prop .prop-type{color:#fbbf24!important}
+.swagger-ui .model .property.primitive .prop-type,
+.swagger-ui .model .prop .prop-format{color:#a5b4fc!important}
+.swagger-ui .model .model-toggle svg{fill:var(--line)}
+.swagger-ui .dialog-ux .backdrop-ux{background:#020617cc}
+.swagger-ui .dialog-ux .modal-ux{background:var(--card)!important;
+    border:1px solid var(--line)}
+.swagger-ui .dialog-ux .modal-ux-header h3,
+.swagger-ui .dialog-ux .modal-ux-content h4{color:var(--ink)!important}
+.swagger-ui .dialog-ux .modal-ux-content p{color:var(--dim)!important}
+.swagger-ui .auth-container{border:1px solid var(--line)!important;
+    background:#0f1d33!important}
+.swagger-ui .auth-container input{background:var(--code)!important;
+    color:var(--ink)!important}
+.swagger-ui .btn.authorize{background:transparent!important;
+    border:1px solid #4ade8080!important;color:#4ade80!important}
+.swagger-ui .errors .error,.swagger-ui .errors .error h3{color:#fca5a5!important}"""
+)
 
 
 @asynccontextmanager
@@ -218,12 +278,32 @@ app = FastAPI(
         "HEALTHCHECK and the endpoint any future load balancer would use."
     ),
     lifespan=lifespan,
+    docs_url=None,  # replaced by the themed /docs route below
     swagger_ui_parameters={
-        "customCss": _SWAGGER_DARK,
         "docExpansion": "list",
         "tryItOutEnabled": True,
     },
 )
+
+
+@app.get("/docs", include_in_schema=False, tags=["meta"],
+         summary="Interactive docs (dark-themed)")
+def docs() -> HTMLResponse:
+    """The stock Swagger UI HTML, with the dark <style> injected before
+    </head>. The customCss *config* option was silently ignored by the
+    bundled Swagger UI build (verified live on 2026-11-07) — editing the
+    served HTML is version-proof and costs no extra files."""
+    page = get_swagger_ui_html(
+        openapi_url=app.openapi_url,
+        title=f"{TITLE} - Swagger UI",
+        oauth2_redirect_url=None,
+        swagger_ui_parameters={"docExpansion": "list", "tryItOutEnabled": True},
+    )
+    # FastAPI >= 0.93 returns an HTMLResponse, older versions a plain str -
+    # normalise to the HTML text either way.
+    html = page.body.decode("utf-8") if isinstance(page, Response) else page
+    assert "</head>" in html, "swagger html shape changed"
+    return HTMLResponse(html.replace("</head>", f"<style>{_SWAGGER_DARK}</style></head>"))
 
 
 def _service() -> ModelService:
